@@ -10,6 +10,7 @@
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);
+void freeranges(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -23,12 +24,39 @@ struct {
   struct run *freelist;
 } kmem;
 
+#ifdef LAB_LOCK
+struct km {
+  int cpu;
+  int allocated;
+  struct spinlock lock;
+  struct run *freelist;
+};
+
+struct km kmems[NCPU];
+#endif
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
+  #ifdef LAB_LOCK
+  printf("Total free mem: %ld, %lx\n", PHYSTOP - (uint64)end, PHYSTOP - (uint64)end);
+  #endif
 }
+
+#ifdef LAB_LOCK
+void
+kinit2()
+{
+  // Initiate kmems, set spu to -1 for initiation
+  for (int i = 0; i < NCPU; i++)
+  {
+    kmems[i].cpu = -1;
+  }
+  freeranges(end, (void*)PHYSTOP);
+}
+#endif
 
 void
 freerange(void *pa_start, void *pa_end)
@@ -38,6 +66,24 @@ freerange(void *pa_start, void *pa_end)
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
 }
+
+#ifdef LAB_LOCK
+/*
+  NOTE: Total free mem from end to PHYSTOP is 134067856 bytes
+  This translates to roughly 32731 pages, and 4091 pages per CPU
+  The last CPU gets a few more pages but should be fine.
+
+  We don't know how many CPUs the system has at this moment, so we have to assume the most (NCPU) and then rearrange when one hart exhausts its own freelist.
+*/
+void
+freeranges(void *pa_start, void *pa_end)
+{
+  char *p;
+  p = (char*)PGROUNDUP((uint64)pa_start);
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+    kfree(p);
+}
+#endif
 
 // Free the page of physical memory pointed at by pa,
 // which normally should have been returned by a

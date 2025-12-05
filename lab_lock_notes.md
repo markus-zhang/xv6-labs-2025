@@ -40,3 +40,151 @@ The code flow is:
 - `statsread()` calls `statslock()` to write into buffer.
 
 Now I still don't know which function created `statistics`, but after the run I found the file within xv6 and contains exactly the texts printed to the screen. There seems to be some issues with the file system as `ls` shows 0 byte and `cat` does print it on screen but shows an error message afterwards.
+
+### Trial 2
+
+Random thoughts:
+
+- ~Figure out how many CPU there is,~ OK we have no idea how many CPUs we have, even though `CPUS` is defined in `Makefile`. `kinit()` is called during initialization of the first hart, and it knows nothing about the other harts.
+
+- I'll initiate `NCPU` elements in a unnamed struct. But I need to consider how best to "steal" blocks from other freelists. So the core problem is, whence `kalloc()` fails to allocate a block for kmem[i], i.e. the freelist for the ith CPU, what is the best way to append blocks from other places.
+
+I know that the total # of free pages between `end` and `PHYSTOP` is about 32,731 pages. Assuming a single free list:
+
+            freelist
+                |
+Initial status: F->F->...->F->
+
+                  freelist
+                     |     
+First `kalloc()`: A->F->F...->F->
+
+                                                  freelist
+                                                      |  
+Eventually all free runs are exhausted: A->A->...->A->
+
+How do we detach free runs from other harts (kmems[j].freelist) and attach it at the end? One way to do it is, let's say `kmems[0].freelist->next == 0` i.e. CPU0 has exhausted the freelist, then we will inquire the next one, i.e. `kmems[1].freelist->next`. We loop through all other CPUs, record their `allocated` number, and stops when we hit the end of the array, or we hit one that has `cpu` is -1 (no CPU), then we append its `freelist` to the end of the previously full freelist. The algo roughly looks like this:
+
+```C
+void *
+kalloc(void)
+{
+  int cpu = cpuid();
+  struct run *r;
+
+  acquire(&kmems[cpu].lock);
+  r = kmems[cpu].freelist;
+  if(r)
+    kmems[cpu].freelist = r->next;
+  release(&kmems[cpu].lock);
+
+  if(r)
+    memset((char*)r, 5, PGSIZE); // fill with junk
+  else
+  {
+    // probably full
+    int found = 0;
+    acquire(&kmems[cpu].lock);
+    for (int i = 0; i < NCPU; i++)
+    {
+      // Skip own CPU
+      if (i == cpu)
+        continue;
+      acquire(&kmems[i].lock);
+      // Naive steal algo: steal from any CPU with available runs
+      if (kmems[i].freelist->next)
+      {
+        printf("kalloc: CPU %d steals from CPU %d\n", cpu, i);
+        r = kmems[i].freelist->next;
+        kmems[cpu].freelist->next = r;
+        kmems[i].freelist->next = 0;
+        release(&kmems[cpu].lock);
+        break;
+      }
+      release(&kmems[i].lock);
+    }
+    if (r)
+      kmems[cpu].allocated += 1;  // Possible r never got allocated
+    release(&kmems[cpu].lock);
+  }
+  return (void*)r;
+}
+```
+
+For `kfree()`, I'm also going to use a very naive algo -- it always frees the run to CPU0's freelist.
+
+```C
+void
+kfree(void *pa)
+{
+  struct run *r;
+
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kfree");
+
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, PGSIZE);
+
+  r = (struct run*)pa;
+
+  acquire(&kmems[0].lock);
+  r->next = kmems[0].freelist;
+  kmems[0].freelist = r;
+  release(&kmems[0].lock);
+}
+```
+
+And we need to initiate each array element. Unfortunately we cannot use `kfree()` because it dumps every free runs into CPU0. Total free mem from end to PHYSTOP is 134067856 bytes. This translates to roughly 32731 pages, and 4092 pages per CPU. The last CPU gets a few less pages but should be fine.
+
+```C
+void
+kinit()
+{
+  // Initiate kmems, set spu to -1 for initiation
+  void *pa_cpu_start = end;
+  for (int i = 0; i < NCPU; i++)
+  {
+    kmems[i].cpu = -1;
+    pa_cpu_start = freeranges(i, pa_cpu_start);
+  }
+}
+
+void *
+freeranges(int cpu, void *pa_cpu_start)
+{
+  char *p;
+  p = (char*)PGROUNDUP((uint64)pa_cpu_start);
+  int pa_cpu_end = (uint64)(p + 4092 * PGSIZE);
+  if (pa_cpu_end > (uinte64)PHYSTOP)
+    pa_cpu_end = (uint64)PHYSTOP;
+
+  // Last freed page is @ p = pa_cpu_end - PGSIZE
+  // This means, for the next CPU, it should start from pa_cpu_end
+  // which is exactly the value we return
+  for(; p + PGSIZE <= pa_cpu_end; p += PGSIZE)
+    kcpufree(cpu, p);
+
+  return (void *)pa_cpu_end;
+}
+
+// kfree() but for each CPU, no need to acquire/release
+// because kinit() is only called for CPU0, so no contention
+void
+kcpufree(int cpu, void *pa)
+{
+  struct run *r;
+
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kcpufree");
+
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, PGSIZE);
+
+  r = (struct run*)pa;
+
+  // acquire(&kmems[cpu].lock);
+  r->next = kmems[cpu].freelist;
+  kmems[cpu].freelist = r;
+  // release(&kmems[cpu].lock);
+}
+```

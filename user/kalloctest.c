@@ -62,6 +62,7 @@ void test1(void)
       printf("fork failed");
       exit(-1);
     }
+    // Run the for loop in child process
     if(pid == 0){
       for(i = 0; i < N1; i++) {
         a = sbrk(4096);

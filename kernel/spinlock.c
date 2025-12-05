@@ -66,6 +66,7 @@ acquire(struct spinlock *lk)
     panic("acquire");
 
 #ifdef LAB_LOCK
+    // GCC built-in memory barrier. Check kernel.asm to find what instructions it spits
     __sync_fetch_and_add(&(lk->n), 1);
 #endif      
 

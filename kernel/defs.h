@@ -66,7 +66,7 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
-void            kinit2(void);
+void            kcpufree(int, void *);
 
 // log.c
 void            initlog(int, struct superblock*);

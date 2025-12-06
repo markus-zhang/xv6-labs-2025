@@ -72,24 +72,25 @@ kalloc(void)
   int cpu = cpuid();
   struct run *r;
 
+  // Acquire lock as other harts could be getting into kmems[cpu], e.g. stealing its runs
   acquire(&kmems[cpu].lock);
   r = kmems[cpu].freelist;
   if(r)
     kmems[cpu].freelist = r->next;
-  release(&kmems[cpu].lock);
+  // release(&kmems[cpu].lock);
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
+  // if(r)
+  //   memset((char*)r, 5, PGSIZE); // fill with junk
   else
   {
     // probably full
-    int found = 0;
-    acquire(&kmems[cpu].lock);
+    // acquire(&kmems[cpu].lock);
     for (int i = 0; i < NCPU; i++)
     {
       // Skip own CPU
       if (i == cpu)
         continue;
+      // I think we need the lock, even if we don't take any run
       acquire(&kmems[i].lock);
       // Naive steal algo: steal from any CPU with available runs
       if (kmems[i].freelist->next)
@@ -98,20 +99,27 @@ kalloc(void)
         r = kmems[i].freelist->next;
         kmems[cpu].freelist->next = r;
         kmems[i].freelist->next = 0;
-        release(&kmems[cpu].lock);
+        // release(&kmems[cpu].lock);
         break;
       }
+      // We don't need kmems[i] anymore so can release the lock
       release(&kmems[i].lock);
     }
+    // Possible none of the other CPUs has runs so r never gets allocated
     if (r)
-      kmems[cpu].allocated += 1;  // Possible r never got allocated
-    release(&kmems[cpu].lock);
+      kmems[cpu].allocated += 1;
   }
+
+  // Writing junk data into the page
+  if (r)
+    memset((char*)r, 5, PGSIZE);
+  
+  release(&kmems[cpu].lock);
   return (void*)r;
 }
 ```
 
-For `kfree()`, I'm also going to use a very naive algo -- it always frees the run to CPU0's freelist.
+For `kfree()`, I'm also going to use a very naive algo -- it always frees the run to CPU0's freelist. Note that `kfree()` can and will be run by multiple harts, so we need to use lock.
 
 ```C
 void
@@ -127,6 +135,7 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
+  // Dump the run to CPU0 -- We gotta figure out a way to distribute fairly
   acquire(&kmems[0].lock);
   r->next = kmems[0].freelist;
   kmems[0].freelist = r;
@@ -155,7 +164,7 @@ freeranges(int cpu, void *pa_cpu_start)
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_cpu_start);
   int pa_cpu_end = (uint64)(p + 4092 * PGSIZE);
-  if (pa_cpu_end > (uinte64)PHYSTOP)
+  if (pa_cpu_end > (uint64)PHYSTOP)
     pa_cpu_end = (uint64)PHYSTOP;
 
   // Last freed page is @ p = pa_cpu_end - PGSIZE
@@ -174,7 +183,7 @@ kcpufree(int cpu, void *pa)
 {
   struct run *r;
 
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP || cpu >= NCPU)
     panic("kcpufree");
 
   // Fill with junk to catch dangling refs.

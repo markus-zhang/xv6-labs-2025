@@ -197,3 +197,79 @@ kcpufree(int cpu, void *pa)
   // release(&kmems[cpu].lock);
 }
 ```
+
+### Trial 3
+I absolutely have no idea why the following code causes hanging:
+
+```C
+// in kalloc.c when it grabs free runs from other CPU
+// The following two lines cause hang
+kmems[i].freelist = (kmems[i].freelist)->next;
+kmems[cpu].freelist = 0;
+
+// While these two are fine
+kmems[cpu].freelist = (kmems[i].freelist)->next;
+kmems[i].freelist = 0;
+```
+
+The only difference is, `cpu` is the current CPU running the code, so the hanging code keeps its freelist to NULL (0), and moves the `i`th CPU's freelist to its next run. `r` is still valid in both scenarios.
+
+I managed to Ctrl+C in `gdb` during the hang and found out that 3 threads are stuck in `acquire()`, so it has something to do with the locks.
+
+Asked ChatGPT and it identified that it could be deadlocking. It does make sense after I thought about it for a while. So a possible scenario is:
+
+CPU0 is out of free runs, so it tries to acquire the lock of CPU1. At the same time, CPU1 is out of free runs as well, so it tries to acquire the lock of CPU0. The for loop is written in a way that CPU0 looks into CPU1 first and CPU1 looks into CPU0 first. This is a deadlock as each locks itself and seeks to acquire the other lock.
+
+Here are the steps to debug the issue:
+
+First, make sure these two lines are not commented out:
+
+```C
+// TODO: I don't know why, but the following 2 lines causes hang:
+// It keeps kmems[cpu].freelist as 0 and moves kmems[i].freelist to the next
+kmems[i].freelist = (kmems[i].freelist)->next;
+kmems[cpu].freelist = 0;
+```
+
+In `kalloctest.c`, comment out all tests except `test4()` in `main()`. It is not mandatory but all tests are pretty lengthy so better save some time.
+
+Run `make qemu-gdb` in one window, and then run `gdb-multiarch` in another. Once xv6 brings up the shell, run `kalloctest`. Wait a couple of minutes to make sure that it hangs "properly".
+
+Now, go back to `gdb`, and `CTRL+C` to bring up the command line. Type `info thread`:
+
+```
+Id      Target Id                    Frame
+* 1    Thread 1.1 (CPU#0 [running]) acquire (lk=lk@entry=0x80008dc8 <kmems+56>) at kernel/spinlock.c:79
+  2    Thread 1.2 (CPU#1 [running]) acquire (lk=lk@entry=0x80008d98 <kmems+8>) at kernel/spinlock.c:79
+  3    Thread 1.3 (CPU#2 [running]) intr_get () at kernel/riscv.h:304
+  4    Thread 1.4 (CPU#3 [running]) acquire (lk=lk@entry=0x80008d98 <kmems+8>) at kernel/spinlock.c:79
+```
+
+Thread 1.2 and 1.4 are competing for the same lock. Switch to thread 1.2 by typing `thread 1.2`, and `p *lk` to print:
+
+```
+$1 = {locked = 1, name = 0x80008048 "kmem0", cpu = 0x80008f78 <cpus>, nts = -1696434253, n = 54146}
+```
+
+This menas it is trying to acquire the lock on CPU0's freelist. Now we switch to `thread 1.1` as it is running in CPU0, and `p *lk` shows that it is trying to acquire the lock on CPU1's freelist:
+
+```
+$2 = {locked = 1, name = 0x80008050 "kmem1", cpu = 0x80008ff8 <cpus+128>, nts = 1801419331, n = 62153}
+```
+
+So basically we have quite a few contending here:
+
+- Both CPU1 and CPU3 are trying to acquire CPU0's lock. This is probably fine, because as long as one of them acquires the other must spin wait. This alone does not result in the deadlock. Note that at the same time CPU1 and CPU3 hold their own locks.
+
+- However, CPU0 is trying to acquire CPU1's lock. Since CPU1 is holding its own lock, now we have a deadlock. CPU0 can't acquire CPU1's lock, and neither can CPU1 acquire CPU0's lock.
+
+This can also explain why the deadlock did not happen once I switched to the new code:
+
+```C
+kmems[cpu].freelist = (kmems[i].freelist)->next;
+kmems[i].freelist = 0;
+```
+
+So instead of asking for the other CPU every time once it exhausts its own page storage (once per page), it grabs all pages from the other CPU and puts the other CPU out of free pages. This basically means the number of free pages for this CPU is going to last a very long time, so it doesn't have to ask other CPUs for every new page. Using the ^ example, this means less chance of AB/BA deadlock.
+
+OK actually the deadlock still happens, which is annoying. I need to figure out a way to reduce these AB/BA deadlocks.

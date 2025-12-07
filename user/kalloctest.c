@@ -26,9 +26,9 @@ int countfree();
 int
 main(int argc, char *argv[])
 {
-  // test1();
-  // test2();
-  // test3();
+  test1();
+  test2();
+  test3();
   test4();
   exit(0);
 }
@@ -220,6 +220,9 @@ void test4(void)
       cpupin(i);
 
       if (i < NCHILD4-1) {
+        // if (i > 0)
+        //   printf("kalloc starts\n");
+        // int j = i;
         for(i = 0; i < N4; i++) {
           a = (uint64) sbrk(4096);
           if(a == 0xffffffffffffffff){
@@ -235,7 +238,21 @@ void test4(void)
           if ((i + 1) % 10000 == 0) {
             printf(".");
           }
+          // if ((j == 0) && ((i + 1) % 1000 == 0)) {
+          //   printf(".");
+          // }
+          // if ((j == 1) && ((i + 1) % 1000 == 0)) {
+          //   printf(">");
+          // }
+          // if ((j == 2) && ((i + 1) % 10000 == 0)) {
+          //   printf("@");
+          // }
+          // if ((j == 2) && ((i + 1) % 10000 == 0)) {
+          //   printf("#");
+          // }
         }
+        // if (i > 0)
+        //   printf("kfree ends\n");
         printf("child done %d\n", i);
         exit(0);
       } else {

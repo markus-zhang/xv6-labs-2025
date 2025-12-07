@@ -12,6 +12,7 @@
 void freerange(void *pa_start, void *pa_end);
 void *freeranges(int cpu, void *pa_cpu_start);
 static void kdump(int cpu);
+static int busylock(void);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -27,7 +28,7 @@ struct {
 
 #ifdef LAB_LOCK
 struct km {
-  int allocated;
+  // int allocated;
   struct spinlock lock;
   struct run *freelist;
 };
@@ -56,7 +57,7 @@ kinit()
   {
     initlock(&kmems[i].lock, lockname[i]);
     kmems[i].freelist = 0;
-    kmems[i].allocated = 0;
+    // kmems[i].allocated = 0;
     // Give all free runs to CPU 0
     // push_off();
     // int cpu = mycpu();
@@ -65,6 +66,7 @@ kinit()
   }
   freerange(end, (void*)PHYSTOP);
   kdump(0);
+  busylock();
 }
 
 static void 
@@ -98,9 +100,9 @@ void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
-  push_off();
+  // push_off();
   int cpu = cpuid();
-  pop_off();
+  // pop_off();
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kcpufree(cpu, p);
@@ -196,9 +198,10 @@ kcpufree(int cpu, void *pa)
 void
 kfree(void *pa)
 {
-  push_off();
+  // push_off();
   int cpu = cpuid();
-  pop_off();
+  // pop_off();
+  // int cpu = busylock();
   struct run *r;
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
@@ -243,9 +246,9 @@ kfree(void *pa)
 void *
 kalloc(void)
 {
-  push_off();
+  // push_off();
   int cpu = cpuid();
-  pop_off();
+  // pop_off();
 
   struct run *r;
 
@@ -287,7 +290,7 @@ kalloc(void)
 
         // Actually, don't do the above, just use this freelist
         // And since we released kmems[cpu].lock ^, can't touch it now
-        kmems[i].freelist = (kmems[i].freelist)->next;
+        kmems[i].freelist = r->next;
         
         // Once break it won't hit the release() after the if block so we need to do it here too
         release(&kmems[i].lock);
@@ -296,9 +299,6 @@ kalloc(void)
       // We don't need kmems[i] anymore so can release the lock
       release(&kmems[i].lock);
     }
-    // Possible none of the other CPUs has runs so r never gets allocated
-    // if (r)
-    //   kmems[cpu].allocated += 1;
   }
 
   // Writing junk data into the page
@@ -307,4 +307,24 @@ kalloc(void)
   
   // release(&kmems[cpu].lock);
   return (void*)r;
+}
+
+// Experimental: find the lock with the most nts (contention) 
+// Maybe we can kfree() to the respective 
+// Nevermind, tried and it gets much worse
+// TBH I still don't get how test1() can go from a few dozens to a few millions with this change
+static int 
+busylock(void)
+{
+  int lock = 0;
+  int n = 0;
+  for (int i = 0; i < NCPU; i++)
+  {
+    if (kmems[i].lock.n > n)
+    {
+      n = kmems[i].lock.n;
+      lock = i;
+    }
+  }
+  return lock;
 }

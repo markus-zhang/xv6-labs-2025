@@ -321,6 +321,6 @@ To achieve this, I need to remove any code that deals with `kmems[cpu]`, so I ca
 
 - I can never assure myself that the code passes the tests next time;
 
-- Everything seems to be pretty random and I don't know how to quantify things clearly. The tests themselves provide quantification, but much of the process is random (e.g. scheduling)
+- Everything seems to be pretty random and I don't know how to quantify things clearly. The tests themselves provide quantification, but much of the process is random (e.g. scheduling). Somehow changing the for loop direction (from CPU 0 to CPU 7, or from CPU 7 to CPU 0) also could result in different results.
 
 Maybe I'll just redo the lab from a clean slate. I need to think through the design.

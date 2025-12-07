@@ -273,3 +273,54 @@ kmems[i].freelist = 0;
 So instead of asking for the other CPU every time once it exhausts its own page storage (once per page), it grabs all pages from the other CPU and puts the other CPU out of free pages. This basically means the number of free pages for this CPU is going to last a very long time, so it doesn't have to ask other CPUs for every new page. Using the ^ example, this means less chance of AB/BA deadlock.
 
 OK actually the deadlock still happens, which is annoying. I need to figure out a way to reduce these AB/BA deadlocks.
+
+I did a few modifications:
+
+- ChatGPT reminded me that nested locks can be tricky as they are easy to get into AB/BA deadlocks. So I modified `kalloc()` in two places:
+
+The first change is to release the lock early, to remove AB/BA possibilities.
+```C
+acquire(&kmems[cpu].lock);
+r = kmems[cpu].freelist;
+if (r)
+  kmems[cpu].freelist = r->next;
+// release this lock early
+release(&kmems[cpu].lock);
+
+if (r)
+{
+  memset((char*)r, 5, PGSIZE);
+  return r;
+}
+```
+
+To achieve this, I need to remove any code that deals with `kmems[cpu]`, so I can't append the newly found freelist onto current CPU, which is fine -- I'd just point `r` to the new freelist, update the freelist pointer to its next one, and call it a day.
+
+```C
+      // Naive steal algo: steal from any CPU with available runs
+      if (kmems[i].freelist != 0)
+      {
+        r = kmems[i].freelist;
+
+        // Actually, don't do the above, just use this freelist
+        // And since we released kmems[cpu].lock ^, can't touch it now
+        kmems[i].freelist = (kmems[i].freelist)->next;
+        
+        // Once break it won't hit the release() after the if block so we need to do it here too
+        release(&kmems[i].lock);
+        break;
+      }
+      // We don't need kmems[i] anymore so can release the lock
+      release(&kmems[i].lock);
+
+```
+
+- The second modification is to follow the hint to give the CPU that calls `kvinit()` all free runs. There are a bunch of modifications on the top of `kalloc.c` involving this, but nothing really difficult.
+
+**I need to say that although all tests have passed, I'm extremely uncomfortable about my work on this lab:**
+
+- I can never assure myself that the code passes the tests next time;
+
+- Everything seems to be pretty random and I don't know how to quantify things clearly. The tests themselves provide quantification, but much of the process is random (e.g. scheduling)
+
+Maybe I'll just redo the lab from a clean slate. I need to think through the design.

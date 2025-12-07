@@ -281,10 +281,13 @@ kalloc(void)
         // kmems[cpu].freelist grabs the rest of the list from i
         // Cut off kmems[i].freelist
         // The commented out 2 lines causes hang. Read lablock_notes.md for explanation
-        kmems[i].freelist = (kmems[i].freelist)->next;
         // kmems[cpu].freelist = 0;
         // kmems[cpu].freelist = (kmems[i].freelist)->next;
         // kmems[i].freelist = 0;
+
+        // Actually, don't do the above, just use this freelist
+        // And since we released kmems[cpu].lock ^, can't touch it now
+        kmems[i].freelist = (kmems[i].freelist)->next;
         
         // Once break it won't hit the release() after the if block so we need to do it here too
         release(&kmems[i].lock);

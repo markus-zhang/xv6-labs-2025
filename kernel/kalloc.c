@@ -15,6 +15,8 @@ void freerange(void *pa_start, void *pa_end, int cpu);
 static void kdump(int cpu);
 // helper function to find the CPU with min nts
 static int minnts(void);
+// helper function to find the CPU with min exhausted
+static int minexhausted(void);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -32,6 +34,9 @@ struct km
 {
   struct spinlock lock;
   struct run *freelist;
+  // # of times freelist is exhausted
+  // The CPU with the least "exhausted" is the first one to steal from
+  int exhausted;
 };
 
 struct km kmems[NCPU];
@@ -62,8 +67,9 @@ kinit()
     // And the next loop starts from address (end + N * PGSIZE)
     // In reality, we only get 999 pages, not 1,000, because memstart is not at page boundary
     initlock(&kmems[cpu].lock, lockname[cpu]);
-    freerange(memstart, (void*)(memstart + 1000 * PGSIZE), cpu);
-    memstart += 1000 * PGSIZE;
+    kmems[cpu].exhausted = 0;
+    freerange(memstart, (void*)(memstart + 2000 * PGSIZE), cpu);
+    memstart += 2000 * PGSIZE;
   }
   // Dump the rest to CPU 0
   initlock(&kmems[0].lock, lockname[0]);
@@ -152,12 +158,14 @@ kfree(void *pa)
 
   push_off();
   int cpu = cpuid();
-  pop_off();
+  // pop_off();
 
   acquire(&kmems[cpu].lock);
   r->next = kmems[cpu].freelist;
   kmems[cpu].freelist = r;
   release(&kmems[cpu].lock);
+
+  pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -186,18 +194,23 @@ kalloc(void)
 
   push_off();
   int cpu = cpuid();
-  pop_off();
+  // pop_off();
 
   acquire(&kmems[cpu].lock);
   r = kmems[cpu].freelist;
   if(r)
+  {
     kmems[cpu].freelist = r->next;
-  release(&kmems[cpu].lock);
+    release(&kmems[cpu].lock);
+  }
 
   if(!r)
   {
+    kmems[cpu].exhausted += 1;
+    release(&kmems[cpu].lock);
     // Try to steal from preferred CPU
-    int prefer = minnts();
+    // int prefer = minnts();
+    int prefer = minexhausted();
     acquire(&kmems[prefer].lock);
     r = kmems[prefer].freelist;
     if (r)
@@ -228,6 +241,8 @@ kalloc(void)
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+
+  pop_off();
   return (void*)r;
 }
 
@@ -244,6 +259,25 @@ minnts(void)
     if (nts > ntstemp)
     {
       nts = ntstemp;
+      cpu = i;
+    }
+  }
+  return cpu;
+}
+
+// Return the index of the CPU that has the minimum nts value for its mem lock
+// atomic_read4() should be good enough?
+static int
+minexhausted(void)
+{
+  int exhausted = atomic_read4(&(kmems[0].exhausted));
+  int cpu = 0;
+  for (int i = 1; i < NCPU; i++)
+  {
+    int exhaustedtemp = atomic_read4(&(kmems[i].exhausted));
+    if (exhausted > exhaustedtemp)
+    {
+      exhausted = exhaustedtemp;
       cpu = i;
     }
   }

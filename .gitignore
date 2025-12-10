@@ -27,3 +27,5 @@ barrier
 *.pcap
 TAGS
 /fs.img.bk
+*.md
+*.kdev4

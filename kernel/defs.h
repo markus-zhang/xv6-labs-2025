@@ -65,6 +65,7 @@ void            ireclaim(int);
 // kalloc.c
 void*           kalloc(void);
 void            kfree(void *);
+void            kinitfree(void *, int);
 void            kinit(void);
 
 // log.c
@@ -242,3 +243,6 @@ void            netinit(void);
 void            net_rx(char *buf, int len);
 
 #endif
+
+// comment to suppress debug information
+#define DEBUG

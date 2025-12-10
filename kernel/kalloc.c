@@ -192,7 +192,7 @@ kalloc(void)
   r = kmems[cpu].freelist;
   if(r)
     kmems[cpu].freelist = r->next;
-  release(&kmem.lock);
+  release(&kmems[cpu].lock);
 
   if(!r)
   {
@@ -205,7 +205,25 @@ kalloc(void)
     release(&kmems[prefer].lock);
 
     // Steal failed, OK now let's steal from other CPUs
-    
+    // I want to release() ASAP
+    if (!r)
+    {
+      for (int i = 0; i < NCPU; i++)
+      {
+        if (i == cpu || i == prefer)
+          continue;
+
+        acquire(&kmems[i].lock);
+        r = kmems[i].freelist;
+        if (r)
+        {
+          kmems[i].freelist = r->next;
+          release(&kmems[i].lock);
+          break;
+        }
+        release(&kmems[i].lock);
+      }
+    }
   }
 
   if(r)

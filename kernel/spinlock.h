@@ -28,5 +28,9 @@ struct rwspinlock {
   struct spinlock l;
   // rfregistered[i] is 1 if CPU i is a reader, 0 if not
   uint rdregistered[NCPU];
+  // if a writer tries to acquire, increment
+  // once a writer is done, decrement
+  uint writerawaiting;
 };
+
 #endif

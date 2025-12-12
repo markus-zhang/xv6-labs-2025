@@ -246,7 +246,7 @@ write_release_inner(struct rwspinlock *rwlk)
   //   amoswap.w zero, zero, (s1)
   __sync_lock_release(&rwlk->l.locked);
 
-  __atomic_fetch_sub(&(rwlk->writerawaiting), 1, __ATOMIC_ACQUIRE);
+  __atomic_fetch_sub(&(rwlk->writerawaiting), 1, __ATOMIC_RELEASE);
   pop_off();
   // release(&rwlk->l);
 }

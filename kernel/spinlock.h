@@ -1,3 +1,5 @@
+#include "param.h"
+
 // Mutual exclusion lock.
 struct spinlock {
   uint locked;       // Is the lock held?
@@ -13,8 +15,18 @@ struct spinlock {
 
 #ifdef LAB_LOCK
 // Reader-writer lock.
+// Rules:
+// 1. Writers can take the lock from readers
+// 2. Only a single writer can acquire the lock
+// 3. If there is no writer, all readers can acquire the lock
+// Considerations:
+// 1. I need to registers the readers in the lock, 
+//    so that I can unregister them when writers try to acquire
+// 2. Writers should still use l.locked to acquire/release the lock
 struct rwspinlock {
   // Replace this with your implementation.
   struct spinlock l;
+  // rfregistered[i] is 1 if CPU i is a reader, 0 if not
+  uint rdregistered[NCPU];
 };
 #endif

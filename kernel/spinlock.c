@@ -125,20 +125,85 @@ static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
   // Replace this with your implementation.
-  acquire(&rwlk->l);
+  // acquire(&rwlk->l);
+  push_off(); // disable interrupts to avoid deadlock.
+  if(holding(&(rwlk->l)))
+    panic("acquire");
+
+  // While there is a writer, there can be no readers
+  while(__atomic_load_n(&(rwlk->l.locked), __ATOMIC_ACQUIRE) != 0)
+  {
+    ;
+  }
+
+// #ifdef LAB_LOCK
+//     __sync_fetch_and_add(&(rwlk->l.n), 1);
+// #endif      
+//   // On RISC-V, sync_lock_test_and_set turns into an atomic swap:
+//   //   a5 = 1
+//   //   s1 = &lk->locked
+//   //   amoswap.w.aq a5, a5, (s1)
+//   while(__sync_lock_test_and_set(&(rwlk->l.locked), 1) != 0) {
+// #ifdef LAB_LOCK
+//     __sync_fetch_and_add(&(rwlk->l.nts), 1);
+// #else
+//    ;
+// #endif
+//   }
+
+  // Tell the C compiler and the processor to not move loads or stores
+  // past this point, to ensure that the critical section's memory
+  // references happen strictly after the lock is acquired.
+  // On RISC-V, this emits a fence instruction.
+  __sync_synchronize();
+
+  // Record info about lock acquisition for holding() and debugging.
+  // lk->cpu = mycpu();
+  int cpu = cpuid();
+  rwlk->rdregistered[cpu] = 1;
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
   // Replace this with your implementation.
-  release(&rwlk->l);
+  // release(&rwlk->l);
+
+  // Contrary to the original release, the lock is not supposed
+  // to be held by a reader, thus panic if it's held
+  if(holding(&(rwlk->l)))
+    panic("release");
+
+  int cpu = cpuid();
+  rwlk->rdregistered[cpu] = 0;
+
+  // Tell the C compiler and the CPU to not move loads or stores
+  // past this point, to ensure that all the stores in the critical
+  // section are visible to other CPUs before the lock is released,
+  // and that loads in the critical section occur strictly before
+  // the lock is released.
+  // On RISC-V, this emits a fence instruction.
+  __sync_synchronize();
+
+  // Release the lock, equivalent to lk->locked = 0.
+  // This code doesn't use a C assignment, since the C standard
+  // implies that an assignment might be implemented with
+  // multiple store instructions.
+  // On RISC-V, sync_lock_release turns into an atomic swap:
+  //   s1 = &lk->locked
+  //   amoswap.w zero, zero, (s1)
+  // __sync_lock_release(&lk->locked);
+
+  pop_off();
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
   // Replace this with your implementation.
+  // I think it is exactly the same as the original acquire(), no?
+  // If it's locked by another writer, just spin
+  // otherwise acquire and set locked to be 1
   acquire(&rwlk->l);
 }
 
@@ -182,6 +247,11 @@ initrwlock(struct rwspinlock *rwlk)
 {
   // Replace this with your implementation.
   initlock(&rwlk->l, "rwlk");
+
+  for (int i = 0; i < NCPU; i++)
+  {
+    rwlk->rdregistered[i] = 0;
+  }
 }
 
 // Test rwspinlock implementation.

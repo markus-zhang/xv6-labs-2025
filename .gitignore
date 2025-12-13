@@ -28,3 +28,4 @@ barrier
 TAGS
 /fs.img.bk
 *.kdev4
+*.log

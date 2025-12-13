@@ -381,3 +381,19 @@ rwspinlock_test_step(uint step, const char *msg)
   }
 }
 ```
+
+### Trial 2
+
+OK I have found a few problems last night and this morning. I need to clarify the specifications:
+
+1. Any awaiting writer should block subsequent readers. So once a writer calls `acquire()`, it should block subsequent readers.
+
+2. Any writer that already acquired the lock, should block all other readers/writers.
+
+3. Any reader that already acquired the lock, should block subsequent writers. So once a reader confirms that there is no awaiting writers, it should block subsequent writers.
+
+4. Any CPU should be able to run `read_acquire()` mutliple times, **without calling read_release()**, without any issue.
+
+5. Any CPU should be able to run `read_release()` mutliple times, **without calling read_acquire()**, without any issue.
+
+After some debugging, found another wierd issue. Somehow `write_acquire_inner()` does NOT set l->locked to 1. Why? In other cases, mycpu() is different from lk.cpu. How could this be?

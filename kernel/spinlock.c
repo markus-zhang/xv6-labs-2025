@@ -199,14 +199,11 @@ read_release_inner(struct rwspinlock *rwlk)
   // if(!readerholding(rwlk))
   //   panic("reader release");
 
-  int cpu = cpuid();
   // Return if I did not acquire the lock
   // if (__atomic_load_n(&rwlk->rdregistered[cpu], __ATOMIC_RELAXED) != 1)
   // {
   //   return;
   // }
-
-  // rwlk->l.cpu = 0;
 
 
   // Release the lock, equivalent to lk->locked = 0.
@@ -220,6 +217,7 @@ read_release_inner(struct rwspinlock *rwlk)
 
   // rwlk->rdregistered[cpu] = 0;
   acquire(&rwlk->bookkeep);
+  int cpu = cpuid();
   // __atomic_fetch_sub(&(rwlk->rdregistered[cpu]), 0, __ATOMIC_RELAXED);
   rwlk->rdregistered[cpu] -= 1;
   // Prevent multiple release without adequate read_acquire()
@@ -259,48 +257,44 @@ write_acquire_inner(struct rwspinlock *rwlk)
     printf("WRITER ACQUIRE++: writerawaiting %d\n", rwlk->writerawaiting);
 
   // Same CPU cannot acquire multiple times without release
+  acquire(&rwlk->bookkeep);
   if(holding(&(rwlk->l)))
     panic("write acquire");
+  release(&rwlk->bookkeep);
 
-  while(
-    // (__atomic_load_n(&(rwlk->readerlocked), __ATOMIC_ACQUIRE) != 0) &&
-    (__sync_lock_test_and_set(&(rwlk->l.locked), 1) != 0)
-  ) {
-    ;
-  }
-  while(
-    1
-    // (__atomic_load_n(&(rwlk->readerlocked), __ATOMIC_RELAXED) != 0)
-    // (__sync_lock_test_and_set(&rwlk->l.locked, 1) != 0)
-  ) {
+  // while(
+  //   // (__atomic_load_n(&(rwlk->readerlocked), __ATOMIC_ACQUIRE) != 0) &&
+  //   (__sync_lock_test_and_set(&(rwlk->l.locked), 1) != 0)
+  // ) {
+  //   ;
+  // }
+  while (1) 
+  {
     // acquire-release in loop to prevent deadlock (do not acquire and spin)
     acquire(&(rwlk->bookkeep));
     if (rwlk->l.locked == 0)
-    {
-      // No need to check further
-      continue;
+    { 
+      int totalreader = 0;
+      for (int i = 0; i < NCPU; i++)
+      {
+        totalreader += rwlk->rdregistered[i];
+      }
+      if (totalreader == 0)
+      {
+        // No reader working
+        // Now both constraints are satisfied
+        rwlk->l.locked = 1;
+        struct cpu* c = mycpu();
+        rwlk->l.cpu = c;
+        // release(&(rwlk->bookkeep));
+        break;
+      }
     }
-    int totalreader = 0;
-    for (int i = 0; i < NCPU; i++)
-    {
-      totalreader += rwlk->rdregistered[i];
-    }
-    if (totalreader == 0)
-    {
-      // Now both are satisfied
-      rwlk->l.locked = 1;
-      struct cpu* c = mycpu();
-      rwlk->l.cpu = c;
-      release(&(rwlk->bookkeep));
-      break;
-    }
+    // Some readers are working, continue spionning
+    release(&(rwlk->bookkeep));
   }
-  // acquire(&rwlk->bookkeep);
-  // rwlk->l.cpu = mycpu();
-  // Reduce writerawaiting once it is not waiting
-  // struct cpu* c = mycpu();
+  release(&(rwlk->bookkeep));
   
-  // (rwlk->writerawaiting) --;
   if (RWLKDEBUG)
     printf("WRITER ACQUIRE--: writerawaiting %d\n", rwlk->writerawaiting);
   // __atomic_store_n(&(rwlk->l.cpu), c, __ATOMIC_SEQ_CST);
@@ -329,18 +323,20 @@ write_acquire_inner(struct rwspinlock *rwlk)
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
+  acquire(&rwlk->bookkeep);
   if(!holding(&(rwlk->l)))
   {
     printf("WRITE RELEASE PANIC: CPU %d\n", cpuid());
     printf("WRITE RELEASE PANIC -> locked: %d, mycpu(): %p, l->cpu: %p\n", rwlk->l.locked, mycpu(), rwlk->l.cpu);
     panic("write release");
   }
+  release(&rwlk->bookkeep);
 
   // rwlk->l.cpu = 0;
-  acquire(&rwlk->bookkeep);
+  // acquire(&rwlk->bookkeep);
   // __atomic_store_n(&(rwlk->l.cpu), 0, __ATOMIC_SEQ_CST);
-  rwlk->l.cpu = 0;
-  release(&rwlk->bookkeep);
+  // rwlk->l.cpu = 0;
+  // release(&rwlk->bookkeep);
   // __atomic_fetch_sub(&(rwlk->writerawaiting), 1, __ATOMIC_SEQ_CST);
 
   // Tell the C compiler and the CPU to not move loads or stores
@@ -349,7 +345,7 @@ write_release_inner(struct rwspinlock *rwlk)
   // and that loads in the critical section occur strictly before
   // the lock is released.
   // On RISC-V, this emits a fence instruction.
-  __sync_synchronize();
+ 
 
   // Release the lock, equivalent to lk->locked = 0.
   // This code doesn't use a C assignment, since the C standard
@@ -358,11 +354,11 @@ write_release_inner(struct rwspinlock *rwlk)
   // On RISC-V, sync_lock_release turns into an atomic swap:
   //   s1 = &lk->locked
   //   amoswap.w zero, zero, (s1)
-  __sync_lock_release(&rwlk->l.locked);
+  
+  // __sync_lock_release(&rwlk->l.locked);
 
   // if (RWLKDEBUG)
   //   printf("WRITER RELEASE: writerawaiting %d\n", rwlk->writerawaiting);
-  // Push decrementing writerawaiting towards the end to prevent any reader hijacking
   // struct cpu* c = mycpu();
   // int cpu = cpuid();
   
@@ -371,10 +367,15 @@ write_release_inner(struct rwspinlock *rwlk)
   // if (RWLKDEBUG)
   //   printf("WRITE RELEASE -> locked: %d, CPU: %d, l->cpu: %p, current cpu: %p\n", rwlk->l.locked, cpu, rwlk->l.cpu, c);
   
+  // Push decrementing writerawaiting towards the end to prevent any reader hijacking
   acquire(&rwlk->bookkeep);
+  rwlk->l.cpu = 0;
+  rwlk->l.locked = 0;
   // __atomic_fetch_sub(&(rwlk->writerawaiting), 1, __ATOMIC_SEQ_CST);
   rwlk->writerawaiting -= 1;
   release(&rwlk->bookkeep);
+
+   __sync_synchronize();
   // pop_off();
 }
 
@@ -584,7 +585,7 @@ sys_rwlktest()
   rwspinlock_test_step(++step, "acquiring multiple locks");
 
   // Debug
-  RWLKDEBUG = 1;
+  RWLKDEBUG = 0;
 
   struct rwspinlock l2;
   initrwlock(&l2);

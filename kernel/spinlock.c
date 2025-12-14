@@ -140,7 +140,7 @@ read_acquire_inner(struct rwspinlock *rwlk)
   // NOTE: Block writers, not readers once acquired
 
   // acquire(&(rwlk->bookkeeplk));
-  int cpu = cpuid();
+  // int cpu = cpuid();
   // release(&(rwlk->bookkeeplk));
 
   // Awaiting for acquired writers to release
@@ -154,7 +154,8 @@ read_acquire_inner(struct rwspinlock *rwlk)
     {
         // OK we can go
         // Increment rdregistered
-        rwlk->rdregistered[cpu] += 1;
+        // rwlk->rdregistered[cpu] += 1;
+        rwlk->totalreader += 1;
         release(&(rwlk->bookkeeplk));
         break;
     }
@@ -174,15 +175,16 @@ read_release_inner(struct rwspinlock *rwlk)
   // NOTE: What if I'm not the last reader to release?
   // NOTE: What if a writer tries to acquire the lock at the same time?
 
-  int cpu = cpuid();
+  // int cpu = cpuid();
 
   __sync_synchronize();
 
   acquire(&rwlk->bookkeeplk);
-  rwlk->rdregistered[cpu] -= 1;
+  // rwlk->rdregistered[cpu] -= 1;
+  rwlk->totalreader -= 1;
   // Prevent multiple release without adequate read_acquire()
-  if (rwlk->rdregistered[cpu] < 0)
-    rwlk->rdregistered[cpu] = 0;
+  // if (rwlk->rdregistered[cpu] < 0)
+  //   rwlk->rdregistered[cpu] = 0;
   release(&rwlk->bookkeeplk);
 }
 
@@ -194,11 +196,13 @@ write_acquire_inner(struct rwspinlock *rwlk)
   // NOTE: What if other writers are waiting?
   // NOTE: What if a read_acquire_inner() is called in middle?
 
+  struct cpu *c = mycpu();
+
   acquire(&rwlk->bookkeeplk);
   rwlk->writerawaiting += 1;
   release(&rwlk->bookkeeplk);
 
-  struct cpu *c = mycpu();
+  // struct cpu *c = mycpu();
 
   // Same CPU cannot acquire multiple times without release
   acquire(&rwlk->bookkeeplk);
@@ -210,28 +214,20 @@ write_acquire_inner(struct rwspinlock *rwlk)
   {
     // acquire-release in loop to prevent deadlock (do not acquire and spin)
     acquire(&(rwlk->bookkeeplk));
-    if (rwlk->writerlocked == 0)
-    { 
-      int totalreader = 0;
-      for (int i = 0; i < NCPU; i++)
-      {
-        totalreader += rwlk->rdregistered[i];
-      }
-      if (totalreader == 0)
-      {
-        // No reader working
-        // Now both constraints are satisfied
-        rwlk->writerlocked = 1;
-        rwlk->cpu = c;
-        // No longer waiting
-        rwlk->writerawaiting -= 1;
-        break;
-      }
+    if ((rwlk->writerlocked == 0) && (rwlk->totalreader == 0))
+    {
+      // No reader working
+      // Now both constraints are satisfied
+      rwlk->writerlocked = 1;
+      rwlk->cpu = c;
+      // No longer waiting
+      rwlk->writerawaiting -= 1;
+      release(&(rwlk->bookkeeplk));
+      break;
     }
     // Some readers are working, continue spionning
     release(&(rwlk->bookkeeplk));
   }
-  release(&(rwlk->bookkeeplk));
 
   // Tell the C compiler and the processor to not move loads or stores
   // past this point, to ensure that the critical section's memory
@@ -243,9 +239,8 @@ write_acquire_inner(struct rwspinlock *rwlk)
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  acquire(&rwlk->bookkeeplk);
   struct cpu *c = mycpu();
-  // if(!holding(&(rwlk->l)))
+  acquire(&rwlk->bookkeeplk);
   if (!(rwlk->writerlocked == 1 && rwlk->cpu == c))
   {
     printf("WRITE RELEASE PANIC: CPU %d\n", cpuid());
@@ -253,6 +248,9 @@ write_release_inner(struct rwspinlock *rwlk)
     printf("WRITE RELEASE PANIC -> locked: %d, mycpu(): %p, l->cpu: %p\n", rwlk->writerlocked, mycpu(), rwlk->cpu);
     panic("write release");
   }
+  release(&rwlk->bookkeeplk);
+
+  acquire(&rwlk->bookkeeplk);
   rwlk->cpu = 0;
   release(&rwlk->bookkeeplk);
 
@@ -306,6 +304,7 @@ initrwlock(struct rwspinlock *rwlk)
   rwlk->cpu = 0;
   rwlk->writerawaiting = 0;
   rwlk->writerlocked = 0;
+  rwlk->totalreader = 0;
 }
 
 // Test rwspinlock implementation.
@@ -539,7 +538,7 @@ sys_rwlktest()
     }
 
     // Debug
-    RWLKDEBUG = 0;
+    // RWLKDEBUG = 0;
   }
 
   rwspinlock_test_step(++step, "done");

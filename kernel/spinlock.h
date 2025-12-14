@@ -30,11 +30,11 @@ struct rwspinlock {
   struct spinlock bookkeeplk;
   // rfregistered[i] is 1 if CPU i is a reader, 0 if not
   uint rdregistered[NCPU];
+  int totalreader;
   // if a writer tries to acquire, increment
   // once a writer is done, decrement
   // We cannot define a static variable in a C struct
   int writerawaiting;
   int writerlocked;
-  // int readerlocked;
 };
 #endif

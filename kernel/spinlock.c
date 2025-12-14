@@ -196,13 +196,13 @@ write_acquire_inner(struct rwspinlock *rwlk)
   // NOTE: What if other writers are waiting?
   // NOTE: What if a read_acquire_inner() is called in middle?
 
-  struct cpu *c = mycpu();
+  // struct cpu *c = mycpu();
 
   acquire(&rwlk->bookkeeplk);
   rwlk->writerawaiting += 1;
   release(&rwlk->bookkeeplk);
 
-  // struct cpu *c = mycpu();
+  struct cpu *c = mycpu();
 
   // Same CPU cannot acquire multiple times without release
   acquire(&rwlk->bookkeeplk);

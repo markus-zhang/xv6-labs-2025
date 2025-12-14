@@ -397,3 +397,27 @@ OK I have found a few problems last night and this morning. I need to clarify th
 5. Any CPU should be able to run `read_release()` mutliple times, **without calling read_acquire()**, without any issue.
 
 After some debugging, found another wierd issue. Somehow `write_acquire_inner()` does NOT set l->locked to 1. Why? In other cases, mycpu() is different from lk.cpu. How could this be?
+
+### Trial 3
+
+After many trials I managed to get a couple of 4/4 CPU pass for this lab. I'm still not satisfied with the result because it is hit or miss. But here is a summary of what principles I followed:
+
+1. Never wrap while loops with `acquire()-release()`. Otherwise it introduces deadlock (both writers try to contend for the same lock and cannot because the constraints are not satisfied).
+
+2. Always wrap hot pathes with `acquire()-release()`. I introduced a new spinlock `bookkeeplk` for this purpose -- whenever I need to read/update the critical variables, such as `totalreader`, `writerawaiting` and `writerlocked`, I acquire `bookkeeplk` first and release it as soon as possible.
+
+3. For `read_acquire_inner()`, it must spin until:
+  - There is no writer working (`writerlocked == 0`)
+  - There is no writer awaiting (`writerawaiting == 0`)
+  Then it increments `totalreader` to block subsequent writers to acquire the lock
+
+4. For `read_release_inner()`, it simply decrements `totalreader`.
+
+5. For `write_acquire_inner()`, it immediately increments `writerawaiting` to block subsequent readers to steal the lock (recall that readers need to spin until this variable is 0), and the spins until:
+  - The last write is done working (`writerlocked == 0`)
+  - There is no reader working (`totalreader == 0`)
+  Then it sets `writerlocked` to 1, sets `cpu` and decrement `writerawaiting` because it is not waiting anymore.
+
+6. For `write_release_inner()`, it simply sets `cpu` and `writerlocked` to 0. I'm not sure if I should wrap the whole critical part in a single `acquire()-release()`, or (as implemented) in multiples.
+
+The whole implementation is still very shaky. CPU 3 rarely passes the test as a reader can easily sneak ahead of CPU 0 because CPU 0 needs to print a message. But I have no idea how to stop the stealing, since CPU 0 has not even called `write_acquire()`, all those protections are off.

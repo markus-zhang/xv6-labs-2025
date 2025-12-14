@@ -24,15 +24,17 @@ struct spinlock {
 //    so that I can unregister them when writers try to acquire
 // 2. Writers should still use l.locked to acquire/release the lock
 struct rwspinlock {
-  struct spinlock l;
-  struct spinlock bookkeep;
+  // struct spinlock l;
+  char* name;
+  struct cpu *cpu;
+  struct spinlock bookkeeplk;
   // rfregistered[i] is 1 if CPU i is a reader, 0 if not
   uint rdregistered[NCPU];
   // if a writer tries to acquire, increment
   // once a writer is done, decrement
   // We cannot define a static variable in a C struct
   int writerawaiting;
+  int writerlocked;
   // int readerlocked;
 };
-
 #endif

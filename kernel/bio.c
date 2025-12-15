@@ -144,6 +144,7 @@ brelse(struct buf *b)
   releasesleep(&b->lock);
 
   acquire(&bcache.lock);
+  //NOTE - Food for thought: What happens if it reboots immediately after the next line?
   b->refcnt--;
   if (b->refcnt == 0) {
     // no one is waiting for it.
@@ -176,11 +177,11 @@ brelse(struct buf *b)
 
     */
     b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    b->prev->next = b->next;    // These two lines decouple b->next and b->prev from b
+    b->next = bcache.head.next; // Part I of the process to wire b to tail
+    b->prev = &bcache.head;     // Part I of the process to wire original head to b1
+    bcache.head.next->prev = b; // Part II of the process to wire b to tail
+    bcache.head.next = b;       // Part II of the process to wire original head to b1
   }
   
   release(&bcache.lock);

@@ -32,7 +32,15 @@
 
 // Contents of the header block, used for both the on-disk header block
 // and to keep track in memory of logged block# before commit.
+//NOTE - The header block contains an array of sector numbers, one for each of the logged blocks, 
+// and the count of log blocks.
+// xv6 writes the header block when a transaction COMMITS, not before,
+// and sets the count to zero AFTER copying the logged blocks to the FS.
+// If a crash occurs before commit, n will be 0 -> xv6 does nothing during reboot
+// If a crash occurs after commit + before copying is done, n > 0 -> xv6 "replays" the transaction
+// If a crash occurs after copying is done, we don't care anyway
 struct logheader {
+  // 0 means no transaction, non-zero means the log contains a COMPLETE COMMITTED transaction
   int n;
   int block[LOGBLOCKS];
 };
@@ -124,6 +132,9 @@ recover_from_log(void)
 }
 
 // called at the start of each FS system call.
+/*NOTE - 
+1. begin_op() acquires the lock immediately, but sleep() releases the lock.
+*/
 void
 begin_op(void)
 {

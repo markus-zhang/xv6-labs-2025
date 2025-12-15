@@ -56,6 +56,7 @@ bzero(int dev, int bno)
   bp = bread(dev, bno);
   memset(bp->data, 0, BSIZE);
   log_write(bp);
+  //ANCHOR[id=brelse_example]
   brelse(bp);
 }
 

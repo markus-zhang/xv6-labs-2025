@@ -41,6 +41,16 @@ binit(void)
   initlock(&bcache.lock, "bcache");
 
   // Create linked list of buffers
+  /*NOTE - Circular double linked list
+    Assuming two elements in buf[]
+          ______         ____         ____
+    |-----|head|<--next--|b0|<--next--|b1|<----------|
+    | --->|____|--prev-->|__|--prev-->|__|---prev--| |
+    | |                                            | |
+    | |--------------------------------------------| |
+    |                                                |
+    |--next-->---------------------------------------|
+  */
   bcache.head.prev = &bcache.head;
   bcache.head.next = &bcache.head;
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
@@ -60,6 +70,9 @@ bget(uint dev, uint blockno)
 {
   struct buf *b;
 
+  /*NOTE -  Hold the lock early to ensure there is only one cached buffer per each disk sector,
+            and readers see writes
+  */
   acquire(&bcache.lock);
 
   // Is the block already cached?
@@ -67,6 +80,12 @@ bget(uint dev, uint blockno)
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
       release(&bcache.lock);
+      /*NOTE - Two locks
+      1. bcache.lock protects the metadata of the buffer (refcnt, dev, valid, etc.)
+      2. sleeplock b->lock protects read/write of the block's buffered content
+      Looks like read/write must releases the sleeplock by calling brelse()
+      //LINK - kernel/fs.c#brelse_example
+      */
       acquiresleep(&b->lock);
       return b;
     }
@@ -74,6 +93,8 @@ bget(uint dev, uint blockno)
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
+  //NOTE - it doesn't load from disk, just return the buffer.
+  //LINK - kernel/bio.c#load_from_disk
   for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
     if(b->refcnt == 0) {
       b->dev = dev;
@@ -96,6 +117,7 @@ bread(uint dev, uint blockno)
 
   b = bget(dev, blockno);
   if(!b->valid) {
+    //ANCHOR[id=load_from_disk]
     virtio_disk_rw(b, 0);
     b->valid = 1;
   }
@@ -125,6 +147,34 @@ brelse(struct buf *b)
   b->refcnt--;
   if (b->refcnt == 0) {
     // no one is waiting for it.
+    /*NOTE - Put b to the position of head, and push head one slot further
+    Assuming we have the following setup in buf[], and we want to brelse() b1
+          ______         ____         ____         ____
+    |-----|head|<--next--|b0|<--next--|b1|<--next--|b2|<---------|
+    | --->|____|--prev-->|__|--prev-->|__|--prev-->|__|--prev->| |
+    | |                                                        | |
+    | |--------------------------------------------------------- |
+    |                                                            |
+    |--next-->---------------------------------------------------|
+
+    b->next->prev = b->prev;      | b0->prev = b2
+    b->prev->next = b->next;      | b2->next = b0
+    b->next = bcache.head.next;   | b1->next = b2
+    b->prev = &bcache.head;       | b1->prev = head
+    bcache.head.next->prev = b;   | b2->prev = b1
+    bcache.head.next = b;         | head.next = b1
+
+    So we have the following setup afterwards:
+
+          ____         ______         ____         ____
+    |-----|b1|<--next--|head|<--next--|b0|<--next--|b2|<---------|
+    | --->|__|--prev-->|____|--prev-->|__|--prev-->|__|--prev->| |
+    | |                                                        | |
+    | |--------------------------------------------------------- |
+    |                                                            |
+    |--next-->---------------------------------------------------|
+
+    */
     b->next->prev = b->prev;
     b->prev->next = b->next;
     b->next = bcache.head.next;

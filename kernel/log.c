@@ -144,8 +144,10 @@ begin_op(void)
       sleep(&log, &log.lock);
     } else if(log.lh.n + (log.outstanding+1)*MAXOPBLOCKS > LOGBLOCKS){
       // this op might exhaust log space; wait for commit.
+      //ANCHOR[id=begin_op_sleep]
       sleep(&log, &log.lock);
     } else {
+      //NOTE - Number of (outstanding) system calls
       log.outstanding += 1;
       release(&log.lock);
       break;
@@ -164,6 +166,7 @@ end_op(void)
   log.outstanding -= 1;
   if(log.committing)
     panic("log.committing");
+    //NOTE - If it's the last outstanding operation, starts to commit
   if(log.outstanding == 0){
     do_commit = 1;
     log.committing = 1;
@@ -171,6 +174,7 @@ end_op(void)
     // begin_op() may be waiting for log space,
     // and decrementing log.outstanding has decreased
     // the amount of reserved space.
+    //LINK - kernel/log.c#begin_op_sleep
     wakeup(&log);
   }
   release(&log.lock);
@@ -206,10 +210,11 @@ static void
 commit()
 {
   if (log.lh.n > 0) {
-    write_log();     // Write modified blocks from cache to log
+    write_log();     // Write modified blocks from buffer cache to log on disk
     write_head();    // Write header to disk -- the real commit
     install_trans(0); // Now install writes to home locations
     log.lh.n = 0;
+    //NOTE - Write header to disk again (with n=0), so that recovery doesn't replay
     write_head();    // Erase the transaction from the log
   }
 }
@@ -238,6 +243,7 @@ log_write(struct buf *b)
     if (log.lh.block[i] == b->blockno)   // log absorption
       break;
   }
+  //NOTE - If the inner if() never hits, i = log.lh.n after the loop
   log.lh.block[i] = b->blockno;
   if (i == log.lh.n) {  // Add new block to log?
     bpin(b);

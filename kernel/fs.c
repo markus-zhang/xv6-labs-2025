@@ -176,6 +176,11 @@ bfree(int dev, uint b)
 // read or write that inode's ip->valid, ip->size, ip->type, &c.
 
 struct {
+  /*NOTE - lock protects 
+    1. The invariant that an inode is present in itable at most once
+    2. The invariant that an inode's ref field counts the # of in-memory pointers to the inode
+      //LINK - kernel/fs.c#itable_lock_ex1
+  */
   struct spinlock lock;
   struct inode inode[NINODE];
 } itable;
@@ -204,6 +209,10 @@ ialloc(uint dev, short type)
   struct buf *bp;
   struct dinode *dip;
 
+  /*NOTE - Loops over inode struction ON DISK,
+    Pick a free dinode, mark it allocated ON DISK,
+    then call iget() to add it into itable
+  */
   for(inum = 1; inum < sb.ninodes; inum++){
     bp = bread(dev, IBLOCK(inum, sb));
     dip = (struct dinode*)bp->data + inum%IPB;
@@ -255,16 +264,21 @@ iget(uint dev, uint inum)
   // Is the inode already in the table?
   empty = 0;
   for(ip = &itable.inode[0]; ip < &itable.inode[NINODE]; ip++){
+    //NOTE - if inode already in itable, increment ref and return it
     if(ip->ref > 0 && ip->dev == dev && ip->inum == inum){
+      //ANCHOR[id=itable_lock_ex1]
       ip->ref++;
       release(&itable.lock);
+      //NOTE - ip is returned with NON-EXCLUSIVE access, caller needs to call ilock()
       return ip;
     }
+    //NOTE - records the position of the FIRST empty slot
     if(empty == 0 && ip->ref == 0)    // Remember empty slot.
       empty = ip;
   }
 
   // Recycle an inode entry.
+  //NOTE - If inode not found in table, and there is no empty slot, panic
   if(empty == 0)
     panic("iget: no inodes");
 
@@ -275,6 +289,7 @@ iget(uint dev, uint inum)
   ip->valid = 0;
   release(&itable.lock);
 
+  //NOTE - ip is returned with NON-EXCLUSIVE access, caller needs to call ilock()
   return ip;
 }
 
@@ -291,6 +306,9 @@ idup(struct inode *ip)
 
 // Lock the given inode.
 // Reads the inode from disk if necessary.
+//NOTE - Separation of iget() and ilock() solves some deadlock (e.g. during directory lookup)
+// Multiple processes can hold a C pointer to an inode returned by iget(),
+// but only one process can lock it at a time.
 void
 ilock(struct inode *ip)
 {
@@ -302,6 +320,7 @@ ilock(struct inode *ip)
 
   acquiresleep(&ip->lock);
 
+  //NOTE - if inode has not been read into memory, read from disk
   if(ip->valid == 0){
     bp = bread(ip->dev, IBLOCK(ip->inum, sb));
     dip = (struct dinode*)bp->data + ip->inum%IPB;
@@ -403,6 +422,7 @@ ireclaim(int dev)
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
 // returns 0 if out of disk space.
+//NOTE - bmap() returns the block number
 static uint
 bmap(struct inode *ip, uint bn)
 {
@@ -422,7 +442,10 @@ bmap(struct inode *ip, uint bn)
 
   if(bn < NINDIRECT){
     // Load indirect block, allocating if necessary.
+    //NOTE - addrs[NDIRECT] is the last element, which holds the block number of the INDIRECT block.
+    // Then it goes into the indirect block, and search for the index bn-NDIRECT. Allocate if empty.
     if((addr = ip->addrs[NDIRECT]) == 0){
+      //ANCHOR[id=balloc_ex_1]
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
@@ -431,6 +454,7 @@ bmap(struct inode *ip, uint bn)
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     if((addr = a[bn]) == 0){
+      //ANCHOR[id=balloc_ex_2]
       addr = balloc(ip->dev);
       if(addr){
         a[bn] = addr;
@@ -453,13 +477,18 @@ itrunc(struct inode *ip)
   struct buf *bp;
   uint *a;
 
+  //NOTE - Start with indirect blocks
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
+      //NOTE - 0 means empty - future balloc() will allocate
+      //LINK - kernel/fs.c#balloc_ex_1
+      //LINK - kernel/fs.c#balloc_ex_2
       ip->addrs[i] = 0;
     }
   }
 
+  //NOTE - Indirect blocks
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
@@ -468,12 +497,15 @@ itrunc(struct inode *ip)
         bfree(ip->dev, a[j]);
     }
     brelse(bp);
+    //NOTE - The indirect block itself
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
 
   ip->size = 0;
   iupdate(ip);
+
+  //NOTE - caller should call releasesleep(&ip->lock) to release ip->lock
 }
 
 // Copy stat information from inode.
@@ -492,22 +524,38 @@ stati(struct inode *ip, struct stat *st)
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
+//NOTE - Copy n bytes, starting from offset off, from ip, to VA user_dst
+//We have two error code: 0 and -1
 int
 readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 {
   uint tot, m;
   struct buf *bp;
 
+  //NOTE - If we want to read beyond the end of the file (off > ip->size),
+  //or if we want to read negative number of bytes (off + n < off),
+  //return an error (0 bytes read)
   if(off > ip->size || off + n < off)
     return 0;
+  //NOTE - if part of the address we want to read lies beyond the end of the file,
+  // it truncates it to make sure the read doesn't cross the end of the file.
   if(off + n > ip->size)
     n = ip->size - off;
 
+  //NOTE - I think each loop caps the number of bytes read, but I don't get the details
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
+    //NOTE - Get the block number
     uint addr = bmap(ip, off/BSIZE);
     if(addr == 0)
       break;
+    //NOTE - Use the block number to fetch a pointer to the buffer
     bp = bread(ip->dev, addr);
+    /*NOTE - What is the maximum number of bytes readi() reads/copies out each loop?
+      BSIZE = 1024, tot = 0 for first loop
+      Let's say we have a file of 4,096 bytes, and want to read 4,096 bytes from offset 0.
+      First loop: n - tot = 4,096, BSIZE - off%BSIZE = 1,024, so m = 1,024 bytes
+      Apparently, BSIZE - off%BSIZE is capped at BSIZE, so m is capped at BSIZE bytes
+    */
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
       brelse(bp);
@@ -532,22 +580,30 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
   uint tot, m;
   struct buf *bp;
 
+  //NOTE - If we want to start the write beyond the end of file (off > ip->size),
+  //or want to write negative number of bytes (off + n < off),
+  //return -1 (why not 0? probably because we can write 0 bytes)
   if(off > ip->size || off + n < off)
     return -1;
+  //NOTE - Cannot write pass maximum file size
   if(off + n > MAXFILE*BSIZE)
     return -1;
 
   for(tot=0; tot<n; tot+=m, off+=m, src+=m){
+    //NOTE - Get the block number
     uint addr = bmap(ip, off/BSIZE);
     if(addr == 0)
       break;
+    //NOTE - Use the block number to fetch a pointer to the buffer
     bp = bread(ip->dev, addr);
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyin(bp->data + (off % BSIZE), user_src, src, m) == -1) {
       brelse(bp);
       break;
     }
+    //NOTE - log_write() doesn't write into disk. It just bpin() bp.
     log_write(bp);
+    //NOTE - No longer needs the buffer??
     brelse(bp);
   }
 

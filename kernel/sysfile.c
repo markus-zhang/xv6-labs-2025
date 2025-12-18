@@ -136,6 +136,7 @@ sys_link(void)
   }
 
   ilock(ip);
+  //TODO - Not sure why ip can't be a directory inode. Maybe "links" are T_FILE?
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
@@ -146,9 +147,11 @@ sys_link(void)
   iupdate(ip);
   iunlock(ip);
 
+  //NOTE - new parent directory must exist --
   if((dp = nameiparent(new, name)) == 0)
     goto bad;
   ilock(dp);
+  //NOTE - (continued from ^) and on the same device as the existing inode (ip)
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
@@ -160,6 +163,7 @@ sys_link(void)
 
   return 0;
 
+//NOTE - If anything bad happened, rollback (concept of transaction)
 bad:
   ilock(ip);
   ip->nlink--;
@@ -248,25 +252,31 @@ create(char *path, short type, short major, short minor)
   struct inode *ip, *dp;
   char name[DIRSIZ];
 
+  //NOTE - nameiparent() copies the final path element into name if found
   if((dp = nameiparent(path, name)) == 0)
     return 0;
 
   ilock(dp);
 
+  //NOTE - If name already exists, returns ip
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
     if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
       return ip;
+    //TODO - I don't understand this part
     iunlockput(ip);
     return 0;
   }
 
+  //NOTE - If we didn't find name, create a new inode
   if((ip = ialloc(dp->dev, type)) == 0){
     iunlockput(dp);
     return 0;
   }
 
+  //NOTE - We already held dp's lock. Now we are going to hold ip's lock.
+  //Would it cause deadlock? No, because ip is new so no other process can lock it
   ilock(ip);
   ip->major = major;
   ip->minor = minor;
@@ -275,6 +285,8 @@ create(char *path, short type, short major, short minor)
 
   if(type == T_DIR){  // Create . and .. entries.
     // No ip->nlink++ for ".": avoid cyclic ref count.
+    //TODO: I need to figure out what happens if cyclic ref count...
+    //I guess we wouldn't be able to recycle the inode
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
       goto fail;
   }
@@ -316,18 +328,22 @@ sys_open(void)
 
   begin_op();
 
+  //NOTE - Create a new file
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
       return -1;
     }
+  //NOTE - OK just open the file
   } else {
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
     }
+    //NOTE - ^ create() returns ip locked, but namei() doesn't, so we need to ilock(ip)
     ilock(ip);
+    //TODO: Directories can only be read from, not written into, WHY?
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -341,6 +357,7 @@ sys_open(void)
     return -1;
   }
 
+  //NOTE - Allocate a new file and a new file descriptor
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);

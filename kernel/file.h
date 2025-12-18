@@ -30,6 +30,7 @@ struct inode {
 };
 
 // map major device number to device functions.
+//ANCHOR[id=decsw_setup_ex]
 struct devsw {
   int (*read)(int, uint64, int);
   int (*write)(int, uint64, int);

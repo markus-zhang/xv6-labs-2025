@@ -23,6 +23,7 @@
 #include "fs.h"
 #include "buf.h"
 
+//ANCHOR[id=buf_list]
 struct {
   struct spinlock lock;
   struct buf buf[NBUF];

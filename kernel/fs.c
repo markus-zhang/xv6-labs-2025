@@ -510,6 +510,7 @@ itrunc(struct inode *ip)
 
 // Copy stat information from inode.
 // Caller must hold ip->lock.
+//NOTE - Used by the stat syscall
 void
 stati(struct inode *ip, struct stat *st)
 {
@@ -607,6 +608,7 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
     brelse(bp);
   }
 
+  //NOTE - Extend the file size if needed (off is INCREMENTED in the for loop)
   if(off > ip->size)
     ip->size = off;
 
@@ -628,15 +630,28 @@ namecmp(const char *s, const char *t)
 
 // Look for a directory entry in a directory.
 // If found, set *poff to byte offset of entry.
+//NOTE SOME callers of dirlookup() lock dp first, not sure if it's every caller, though.
+//LINK - kernel/fs.c#lock_dp_1
+/*TODO - Figure out this part of the text:
+  (why dirlookup() returns dp unlocked)
+  The caller has locked dp, so if the lookup was for ., an alias for the current directory, 
+  attempting to lock the inode before returning would try to re-lock dp and deadlock.
+
+  But I don't get what's so special with .? The deadlock would happen to everything, no?
+*/
 struct inode*
 dirlookup(struct inode *dp, char *name, uint *poff)
 {
   uint off, inum;
   struct dirent de;
 
+  //NOTE - directories are implemented like a file. Its inode has type = T_DIR.
+  //Its data is a sequence of directory entries
+  //TODO - Where is the definition of a sample directory object?
   if(dp->type != T_DIR)
     panic("dirlookup not DIR");
 
+  //NOTE - directories are like files, so we can use readi() to read into a struct dirent
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup read");
@@ -644,6 +659,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
       continue;
     if(namecmp(name, de.name) == 0){
       // entry matches path element
+      //NOTE - Save byte offset of the entry in case caller wants to edit
       if(poff)
         *poff = off;
       inum = de.inum;
@@ -656,6 +672,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
 
 // Write a new directory entry (name, inum) into the directory dp.
 // Returns 0 on success, -1 on failure (e.g. out of disk blocks).
+//TODO - Figure out where does inum come from. Does the caller increment it?
 int
 dirlink(struct inode *dp, char *name, uint inum)
 {
@@ -665,11 +682,17 @@ dirlink(struct inode *dp, char *name, uint inum)
 
   // Check that name is not present.
   if((ip = dirlookup(dp, name, 0)) != 0){
+    //NOTE - dirlookup() calls iget() which increases ref, so call iput() to decrement ref
     iput(ip);
     return -1;
   }
 
   // Look for an empty dirent.
+  /*REVIEW - I think there is some room for improvement here.
+    With a better data structure it should be faster to find an empty dirent/node.
+    Maybe I can use the circular double linked list?
+    //LINK - kernel/bio.c#buf_list
+  */
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlink read");
@@ -679,6 +702,7 @@ dirlink(struct inode *dp, char *name, uint inum)
 
   strncpy(de.name, name, DIRSIZ);
   de.inum = inum;
+  //NOTE - Write back to the directory inode
   if(writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
     return -1;
 
@@ -733,29 +757,50 @@ namex(char *path, int nameiparent, char *name)
 {
   struct inode *ip, *next;
 
+  /*NOTE - Look at the first character of path:
+  1. path starts with '/', which means it's a root path (e.g. /dev/null in Linux)
+  2. path doesn't start with '/', get the current working directory
+  //TODO - I don't know, what about other paths, e.g. path starts with .. ?
+  */
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
   else
     ip = idup(myproc()->cwd);
 
+  //NOTE - skipelem() copies the next path element from path into name
+  //e.g. skipelem("///a//bb", name) = "bb", setting name = "a"
+  //e.g. skipelem("a", name) = "", setting name = "a"
   while((path = skipelem(path, name)) != 0){
+    //ANCHOR[id=lock_dp_1]
     ilock(ip);
+    //NOTE - Must be wrong if it's not a directory inode
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
     }
+    //NOTE - If want parent dir AND we exhausted all / chars in path (see second e.g. ^)
     if(nameiparent && *path == '\0'){
       // Stop one level early.
       iunlock(ip);
       return ip;
     }
+    //NOTE - if cannot locate name in ip
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
     }
     iunlockput(ip);
+    //NOTE - next is now the directory entry matching `name` in `ip`
+    //Prepare for next while iteration
+    //NOTE - Prevent deadlock: If we are looking up . , 
+    // that means the original ip locked by ilock(ip) ^ is the same as next,
+    // to prevent deadlock, we use iunlockput(ip) to release the lock
     ip = next;
   }
+  /*TODO - Whence we reach this point, it means:
+    - The original ip is indeed a directory (no error return)
+    - ???
+  */
   if(nameiparent){
     iput(ip);
     return 0;

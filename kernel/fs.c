@@ -209,12 +209,21 @@ ialloc(uint dev, short type)
   struct buf *bp;
   struct dinode *dip;
 
-  /*NOTE - Loops over inode struction ON DISK,
+  /*NOTE - Loops over inode structure ON DISK,
     Pick a free dinode, mark it allocated ON DISK,
     then call iget() to add it into itable
   */
   for(inum = 1; inum < sb.ninodes; inum++){
+    //NOTE - Recall that (d)inodes are also stored on disk so they occupy buffers in specific places
+    //boot | superblock | log | inodes | bitmap | data
+    //0    | 1          | 2   | 4      | 7      | 9 
+    //IBLOCK = inum / IPB + sb.inodestart = inum / (BSIZE / sizeof(struct dinode)) + sb.inodestart
+    //BSIZE=1024, sizeof(struct dinode)=64, so IBLOCK = inum/16 + sb.inodestart
+    //sb.inodestart = block number of the first inodeblock
+    //So in the first 15 iteration, IBLOCK() = sb.inodestart, in the next 16 iterations, it's 1+sb.inodestart
+    //TODO: I have no idea why inum starts from 1, not 0...
     bp = bread(dev, IBLOCK(inum, sb));
+    //One inode block has IPB=16 inodes -> each 16 loops has the same bp -> use inum%IPB for individual 64-byte inode
     dip = (struct dinode*)bp->data + inum%IPB;
     if(dip->type == 0){  // a free inode
       memset(dip, 0, sizeof(*dip));
@@ -240,12 +249,19 @@ iupdate(struct inode *ip)
   struct dinode *dip;
 
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
+  //NOTE - Since we already cast bp->data to (struct dinode*),
+  //Pointer arithmetic means (struct dinode*)bp->data + 1 actually
+  //points to the byte address (bp->data + sizeof(struct dinode)),
+  //which is bp->data + 64
   dip = (struct dinode*)bp->data + ip->inum%IPB;
   dip->type = ip->type;
   dip->major = ip->major;
   dip->minor = ip->minor;
   dip->nlink = ip->nlink;
   dip->size = ip->size;
+  //NOTE - sizeof(ip->addrs) is 13 * 4 = 52 bytes, not 4 bytes!
+  //Arrays don't decay into pointers in sizeof(), as sizeof() is an OPERATOR,
+  //and arrays only decay into pointers when passed to FUNCTIONs.
   memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
   log_write(bp);
   brelse(bp);
@@ -543,7 +559,6 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
   if(off + n > ip->size)
     n = ip->size - off;
 
-  //NOTE - I think each loop caps the number of bytes read, but I don't get the details
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
     //NOTE - Get the block number
     uint addr = bmap(ip, off/BSIZE);
@@ -639,6 +654,9 @@ namecmp(const char *s, const char *t)
 
   But I don't get what's so special with .? The deadlock would happen to everything, no?
 */
+//NOTE - I have tracked this function by bp @ sys_open().
+//So dirlookup() goes through every item in the directory, starting from . and ..
+//For each item, it uses namecmp() to match the names
 struct inode*
 dirlookup(struct inode *dp, char *name, uint *poff)
 {
@@ -688,11 +706,8 @@ dirlink(struct inode *dp, char *name, uint inum)
   }
 
   // Look for an empty dirent.
-  /*REVIEW - I think there is some room for improvement here.
-    With a better data structure it should be faster to find an empty dirent/node.
-    Maybe I can use the circular double linked list?
-    //LINK - kernel/bio.c#buf_list
-  */
+  //NOTE - Each "directory" block contains BSIZE/sizeof(de) of struct dirent
+  //in its data field
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlink read");
@@ -784,7 +799,10 @@ namex(char *path, int nameiparent, char *name)
       iunlock(ip);
       return ip;
     }
-    //NOTE - if cannot locate name in ip
+    //TODO - If path = "./testfir1", in the first loop, 
+    //path is now "testdir1" and name is now "."
+    //why does it assume that there is always a name? 
+    //I need to debug more to find out
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;

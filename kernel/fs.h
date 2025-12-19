@@ -58,6 +58,7 @@ struct dinode {
 // The name field may have DIRSIZ characters and not end in a NUL
 // character.
 struct dirent {
+  //NOTE - inum is the inode number
   ushort inum;
   char name[DIRSIZ] __attribute__((nonstring));
 };

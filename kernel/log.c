@@ -239,11 +239,19 @@ log_write(struct buf *b)
   if (log.outstanding < 1)
     panic("log_write outside of trans");
 
+  //NOTE - It is used to absorb multiple disk writes of the same block
+  //during a single transaction, so that we can save log space.
+  //But each write to the same block is different, how can we combine into one?
+  //To understand this, we need to understand that log_write()
+  //doesn't store any actual change of data.
+  //It serves as a "signal", to tell the FS that this block 
+  //needs to be written into disk sometime in the future (commit())
   for (i = 0; i < log.lh.n; i++) {
     if (log.lh.block[i] == b->blockno)   // log absorption
       break;
   }
   //NOTE - If the inner if() never hits, i = log.lh.n after the loop
+  //Then we need to pin the buffer by increasing its refcnt
   log.lh.block[i] = b->blockno;
   if (i == log.lh.n) {  // Add new block to log?
     bpin(b);

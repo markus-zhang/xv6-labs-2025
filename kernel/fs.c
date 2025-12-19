@@ -264,6 +264,12 @@ iupdate(struct inode *ip)
   //and arrays only decay into pointers when passed to FUNCTIONs.
   memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
   log_write(bp);
+  //TODO - Why do we need to call brelse()?
+  //At first I thought because we already signalled the FS that we want to write bp
+  //LINK - kernel/log.c#signal_log
+  //But then I realized that brelse() reduces the refcnt, but where was refcnt incremented?
+  //Eventually I found out that bread() calls bget() which increments the refcnt
+  //I'm still not 100% sure so need to debug again (bp iupdate() in GDB)
   brelse(bp);
 }
 

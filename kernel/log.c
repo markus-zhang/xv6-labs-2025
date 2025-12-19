@@ -252,6 +252,7 @@ log_write(struct buf *b)
   }
   //NOTE - If the inner if() never hits, i = log.lh.n after the loop
   //Then we need to pin the buffer by increasing its refcnt
+  //ANCHOR[id=signal_log]
   log.lh.block[i] = b->blockno;
   if (i == log.lh.n) {  // Add new block to log?
     bpin(b);

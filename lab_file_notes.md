@@ -92,7 +92,82 @@ Once we obtain the inode number of the filename, we can go anywhere. There is a 
 
 Please note that inode number (`inum`) is only unique FOR THE SAME DEVICE (`dev`), so `iget()` checks both `dev` and `inum`. It also creates the inode if it is not in `itable`.
 
+#### *What does cd do*
+
+If we `cd testdir1` and set a breakpoint in `sys_chdir()`:
+
+- It fetches the inode for the path using `namei()`, which calls `namex()`.
+- Then it simply set `p->cwd` to `ip`. Both are pointers to `inode`.
+
 ### logs
 
 #### *log is a global struct log object*
 
+
+### Tracing fs syscalls
+
+#### Run `echo "Hello" > hello.txt` in xv6 and `bp create()` in gdb
+
+Frame:
+  `create (path=path@entry=0x3fffff9f10 "hello.txt", type=type@entry=2, major=major@entry=0, minor=minor@entry=0)`
+
+  I'm curious how `nameiparent()` works, because `path` now is just a filename, without the implicit `./` parent directory.
+
+  Frame:
+    `namex (path=path@entry=0x3fffff9f10 "hello.txt", nameiparent=nameiparent@entry=1, name=name@entry=0x3fffff9eb0 "\340\236\377\377?")`
+    
+    Turns out, if `path` doesn't contain `'/'` as the first char, it finds the parent directory by checking `myproc()->cwd`.
+
+    ```C
+    static struct inode*
+    namex(char *path, int nameiparent, char *name)
+    {
+      struct inode *ip, *next;
+
+      if(*path == '/')
+        ip = iget(ROOTDEV, ROOTINO);
+      //-> Goes into this branch
+      else
+        ip = idup(myproc()->cwd);
+
+      while((path = skipelem(path, name)) != 0){
+        //ANCHOR[id=lock_dp_1]
+        ilock(ip);
+        //NOTE - Must be wrong if it's not a directory inode
+        if(ip->type != T_DIR){
+          iunlockput(ip);
+          return 0;
+        }
+        //NOTE - If want parent dir AND we exhausted all / chars in path (see second e.g. ^)
+        if(nameiparent && *path == '\0'){
+          // Stop one level early.
+          iunlock(ip);
+          return ip;
+        }
+        //TODO - If path = "./testfir1", in the first loop, 
+        //path is now "testdir1" and name is now "."
+        //why does it assume that there is always a name? 
+        //I need to debug more to find out
+        if((next = dirlookup(ip, name, 0)) == 0){
+          iunlockput(ip);
+          return 0;
+        }
+        iunlockput(ip);
+        //NOTE - next is now the directory entry matching `name` in `ip`
+        //Prepare for next while iteration
+        //NOTE - Prevent deadlock: If we are looking up . , 
+        // that means the original ip locked by ilock(ip) ^ is the same as next,
+        // to prevent deadlock, we use iunlockput(ip) to release the lock
+        ip = next;
+      }
+      /*TODO - Whence we reach this point, it means:
+        - The original ip is indeed a directory (no error return)
+        - ???
+      */
+      if(nameiparent){
+        iput(ip);
+        return 0;
+      }
+      return ip;
+    }
+    ```

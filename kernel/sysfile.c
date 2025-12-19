@@ -300,6 +300,7 @@ create(char *path, short type, short major, short minor)
     iupdate(dp);
   }
 
+  //iunlock() + iput()
   iunlockput(dp);
 
   return ip;

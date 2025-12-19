@@ -390,6 +390,96 @@ sys_open(void)
   return fd;
 }
 
+//Only creates new, empty file
+//If parent directory does not exist, exit with an error message
+//If path already exists, exit with an error message
+uint64
+sys_touch(void)
+{
+  char path[MAXPATH];
+  int fd;
+  struct file *f;
+  struct inode *ip;
+
+  //Fetch cli argument
+  if (argstr(0, path, MAXPATH) < 0)
+  {
+    printf("sys_touch: path error\n");
+    return -1;
+  }
+
+  //Increment the number of outstanding syscalls
+  begin_op();
+
+  //Create a new empty file, mimic create()
+  struct inode *dp;
+  char name[DIRSIZ];
+
+  if ((dp = nameiparent(path, name)) == 0)
+  {
+    printf("sys_touch: cannot locate parent path\n");
+    return -1;
+  }
+
+  ilock(dp);
+
+  //does name exist or not
+  if ((ip = dirlookup(dp, name, 0)) != 0)
+  {
+    // name already exists
+    iunlockput(dp);
+    iput(ip);
+    printf("sys_touch: file already exists\n");
+    return -1;
+  }
+
+  //allocate inode
+  if ((ip = ialloc(dp->dev, T_FILE)) == 0)
+  {
+    iunlockput(dp);
+    printf("sys_touch: failed to allocate inode\n");
+    return -1;
+  }
+
+  ilock(ip);
+  ip->nlink = 1;
+  iupdate(ip);
+
+  if (dirlink(dp, name, ip->inum) < 0)
+    goto fail;
+
+  iunlockput(dp);
+
+  //Allocate a new file and a new file descriptor
+  if ((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0)
+  {
+    if (f)
+      fileclose(f);
+    iunlockput(ip);
+    end_op();
+    printf("sys_touch: failed to allocate file or file descriptor\n");
+    return -1;
+  }
+
+  f->type = FD_INODE;
+  f->off = 0;
+  f->ip = ip;
+  f->readable = O_WRONLY;
+  f->writable = O_WRONLY || O_RDWR;
+
+  iunlock(ip);
+  end_op();
+
+  return fd;
+
+fail:
+  ip->nlink = 0;
+  iupdate(ip);
+  iunlockput(ip);
+  iunlockput(dp);
+  return 0;
+}
+
 uint64
 sys_mkdir(void)
 {

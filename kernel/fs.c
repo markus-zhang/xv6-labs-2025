@@ -225,6 +225,7 @@ ialloc(uint dev, short type)
     bp = bread(dev, IBLOCK(inum, sb));
     //One inode block has IPB=16 inodes -> each 16 loops has the same bp -> use inum%IPB for individual 64-byte inode
     dip = (struct dinode*)bp->data + inum%IPB;
+    //ANCHOR[id=free_inode]
     if(dip->type == 0){  // a free inode
       memset(dip, 0, sizeof(*dip));
       dip->type = type;

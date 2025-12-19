@@ -280,7 +280,9 @@ create(char *path, short type, short major, short minor)
   ilock(ip);
   ip->major = major;
   ip->minor = minor;
+  //ip was just allocated, so set nlink to 1
   ip->nlink = 1;
+  //signal that we want to write the change to disk
   iupdate(ip);
 
   if(type == T_DIR){  // Create . and .. entries.

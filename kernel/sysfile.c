@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "buf.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -478,6 +479,46 @@ fail:
   iunlockput(ip);
   iunlockput(dp);
   return 0;
+}
+
+//Try to find a file in all directories
+//Step 1: Loop through all inodes and mark directories
+//Problem: bread(uint dev, uint blockno), how to get dev?
+extern struct superblock sb;
+
+uint64
+sys_find(void)
+{
+  char path[MAXPATH];
+  int fd;
+  struct file *f;
+  struct inode *ip, *dp;
+  struct dinode *dip;
+  struct buf *bp;
+  int inum;
+
+  //Fetch cli argument
+  if (argstr(0, path, MAXPATH) < 0)
+  {
+    printf("sys_find: path error\n");
+    return -1;
+  }
+
+  //Find current dev
+  if (dp = namei(".") == 0)
+  {
+    printf("sys_find: cannot locate dev\n");
+    return -1;
+  }
+
+  //Loop through all inodes
+  for (inum = 0; inum < sb.ninodes; inum++)
+  {
+    bp = bread(dp->dev, IBLOCK(inum, sb));
+    dip = (struct dinode*)bp->data + inum%IPB;
+    printf("Dinode @ address %p, 1st blockno: %d, size of file: %d\n", bp, dip->addrs[0], dip->size);
+  }
+  printf("Total %d dinodes\n", inum);
 }
 
 uint64

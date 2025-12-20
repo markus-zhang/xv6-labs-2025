@@ -212,8 +212,8 @@ There are other data structures such as `struct dirent`, `struct itable`, `struc
 
 I want to create something similar to `sys_open()`, but only for creating empty, new files. The userland program is `touch.c` which calls the sys call for heavy lifting. The syscall is named `sys_touch()` for simplicity.
 
-Essentially, this is a smaller version of `sys_open()` which embeds a smaller version of `create()`. The 
+Essentially, this is a smaller version of `sys_open()` which embeds a smaller version of `create()`.
 
-```C
-struct 
-```
+The code is in `sysfile.c` in branch `fs_touch`. This is a pretty easy piece of code as I only need to copy from `create()` and `sys_open()`.
+
+Now I want to write `find`. 

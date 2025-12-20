@@ -490,9 +490,9 @@ uint64
 sys_find(void)
 {
   char path[MAXPATH];
-  int fd;
-  struct file *f;
-  struct inode *ip, *dp;
+  //int fd;
+  //struct file *f;
+  struct inode *dp;
   struct dinode *dip;
   struct buf *bp;
   int inum;
@@ -505,7 +505,7 @@ sys_find(void)
   }
 
   //Find current dev
-  if (dp = namei(".") == 0)
+  if ((dp = namei(".")) == 0)
   {
     printf("sys_find: cannot locate dev\n");
     return -1;
@@ -519,6 +519,7 @@ sys_find(void)
     printf("Dinode @ address %p, 1st blockno: %d, size of file: %d\n", bp, dip->addrs[0], dip->size);
   }
   printf("Total %d dinodes\n", inum);
+  return 0;
 }
 
 uint64

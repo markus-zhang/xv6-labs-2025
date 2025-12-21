@@ -19,7 +19,7 @@
 #include "bio.h"
 #include "debug.h"
 
-static void list(struct inode *ipath);
+static void list(struct inode *ipath, char *parent);
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -518,6 +518,7 @@ sys_find(void)
   //Actually we can go from the root
   //namei() must be inside a transaction (begin_op <-> end_op pair)
   struct inode *ipath = namei("/");
+  // struct inode *ipath = namei("cat");
   // struct dirent dent;
   // for (uint off = 0; off < ipath->size; off += sizeof(dent))
   // {
@@ -533,30 +534,35 @@ sys_find(void)
   //   struct inode *ientry = namei(dent.name);
   //   printf("type: %d\n", ientry->type);
   // }
-  list(ipath);
+  list(ipath, "/");
+  // printf("inum: %d, type: %d\n", ipath->inum, ipath->type);
 
   end_op();
   return 0;
+  // list(ipath);
 }
 
 //List all entries under a given inode
 static void
-list(struct inode *ipath)
+list(struct inode *ipath, char *parent)
 {
+  ilock(ipath);
   ASSERT(ipath);
   ASSERT(ipath->inum != 0);
+  iunlock(ipath);
 
   struct dirent dent;
 
   for (uint off = 0; off < ipath->size; off += sizeof(dent))
   {
+    ilock(ipath);
     if (readi(ipath, 0, (uint64)&dent, off, sizeof(dent)) != sizeof(dent))
     {
       printf("list: readi error\n");
-      // end_op();
-      // return -1;
+      iunlock(ipath);
       break;
     }
+    iunlock(ipath);
     if(dent.inum == 0)
       break;
     printf("inum: %d, name: %s, ", dent.inum, dent.name);
@@ -568,11 +574,38 @@ list(struct inode *ipath)
     {
       //Skip . and .. to prevent inf recursion
       if (dent.name[0] != '.')
-        list(ientry);
+        list(ientry, dent.name);
       else
         printf("list: skipping . and ..\n");
     }
   }
+}
+
+uint64
+sys_namei(void)
+{
+  char path[MAXPATH];
+  struct inode *dp;
+
+  //Fetch cli argument
+  if (argstr(0, path, MAXPATH) < 0)
+  {
+    printf("sys_find: path error\n");
+    return -1;
+  }
+
+  //Find current dev
+  if ((dp = myproc()->cwd) == 0)
+  {
+    printf("sys_find: cannot locate dev\n");
+    return -1;
+  }
+
+  begin_op();
+  struct inode *ipath = namei(path);
+  printf("inum: %d, type: %d\n", ipath->inum, ipath->type);
+  end_op();
+  return 0;
 }
 
 uint64

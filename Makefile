@@ -197,6 +197,7 @@ UPROGS=\
 	$U/_dorphan\
 	$U/_touch\
 	$U/_find\
+	$U/_namei\
 
 
 

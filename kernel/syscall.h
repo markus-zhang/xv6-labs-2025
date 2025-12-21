@@ -22,3 +22,4 @@
 #define SYS_close  21
 #define SYS_touch  22
 #define SYS_find   23
+#define SYS_namei  24

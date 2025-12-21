@@ -26,6 +26,7 @@ int pause(int);
 int uptime(void);
 int touch(const char*);
 int find(const char*);
+int namei(const char*);
 
 // ulib.c
 int stat(const char*, struct stat*);

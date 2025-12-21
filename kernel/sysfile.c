@@ -16,6 +16,10 @@
 #include "file.h"
 #include "fcntl.h"
 #include "buf.h"
+#include "bio.h"
+#include "debug.h"
+
+static void list(struct inode *ipath);
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -483,19 +487,17 @@ fail:
 
 //Try to find a file in all directories
 //Step 1: Loop through all inodes and mark directories
-//Problem: bread(uint dev, uint blockno), how to get dev?
-extern struct superblock sb;
+//Step 2: Focus on the directories, and print all dir entry names
+//Problem: I only have dinode, how to get inode?
+// extern struct superblock sb;
+// extern struct bc bcache;
 
+// __attribute__((optimize("O0")))
 uint64
 sys_find(void)
 {
   char path[MAXPATH];
-  //int fd;
-  //struct file *f;
   struct inode *dp;
-  struct dinode *dip;
-  struct buf *bp;
-  int inum;
 
   //Fetch cli argument
   if (argstr(0, path, MAXPATH) < 0)
@@ -505,21 +507,72 @@ sys_find(void)
   }
 
   //Find current dev
-  if ((dp = namei(".")) == 0)
+  if ((dp = myproc()->cwd) == 0)
   {
     printf("sys_find: cannot locate dev\n");
     return -1;
   }
 
-  //Loop through all inodes
-  for (inum = 0; inum < sb.ninodes; inum++)
-  {
-    bp = bread(dp->dev, IBLOCK(inum, sb));
-    dip = (struct dinode*)bp->data + inum%IPB;
-    printf("Dinode @ address %p, 1st blockno: %d, size of file: %d\n", bp, dip->addrs[0], dip->size);
-  }
-  printf("Total %d dinodes\n", inum);
+  begin_op();
+
+  //Actually we can go from the root
+  //namei() must be inside a transaction (begin_op <-> end_op pair)
+  struct inode *ipath = namei("/");
+  // struct dirent dent;
+  // for (uint off = 0; off < ipath->size; off += sizeof(dent))
+  // {
+  //   if (readi(ipath, 0, (uint64)&dent, off, sizeof(dent)) != sizeof(dent))
+  //   {
+  //     printf("sys_find: readi error\n");
+  //     end_op();
+  //     return -1;
+  //   }
+  //   if(dent.inum == 0)
+  //     break;
+  //   printf("inum: %d, name: %s, ", dent.inum, dent.name);
+  //   struct inode *ientry = namei(dent.name);
+  //   printf("type: %d\n", ientry->type);
+  // }
+  list(ipath);
+
+  end_op();
   return 0;
+}
+
+//List all entries under a given inode
+static void
+list(struct inode *ipath)
+{
+  ASSERT(ipath);
+  ASSERT(ipath->inum != 0);
+
+  struct dirent dent;
+
+  for (uint off = 0; off < ipath->size; off += sizeof(dent))
+  {
+    if (readi(ipath, 0, (uint64)&dent, off, sizeof(dent)) != sizeof(dent))
+    {
+      printf("list: readi error\n");
+      // end_op();
+      // return -1;
+      break;
+    }
+    if(dent.inum == 0)
+      break;
+    printf("inum: %d, name: %s, ", dent.inum, dent.name);
+    struct inode *ientry = namei(dent.name);
+    printf("type: %d\n", ientry->type);
+
+    //Recursively drills down the directory
+    if (ientry->type == T_DIR)
+    {
+      //Skip . and .. to prevent inf recursion
+      if (dent.name[0] != '.')
+        list(ientry);
+      else
+        printf("list: skipping . and ..\n");
+    }
+  }
 }
 
 uint64

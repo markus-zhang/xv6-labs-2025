@@ -806,7 +806,7 @@ namex(char *path, int nameiparent, char *name)
       iunlock(ip);
       return ip;
     }
-    //TODO - If path = "./testfir1", in the first loop, 
+    //TODO - If path = "./testdir1", in the first loop, 
     //path is now "testdir1" and name is now "."
     //why does it assume that there is always a name? 
     //I need to debug more to find out

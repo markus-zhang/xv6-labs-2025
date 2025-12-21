@@ -217,3 +217,5 @@ Essentially, this is a smaller version of `sys_open()` which embeds a smaller ve
 The code is in `sysfile.c` in branch `fs_touch`. This is a pretty easy piece of code as I only need to copy from `create()` and `sys_open()`.
 
 Now I want to write `find`. 
+
+Jeez the API is so convoluted. Somehow all the conveninet functions like `iget()` are `static`, and there is NO WAY to call these functions from the API. For example, I cannot get an `struct inode` from a random path, such as "/". I don't understand why this is so convoluted. I wonder what is the Windows way to do it.

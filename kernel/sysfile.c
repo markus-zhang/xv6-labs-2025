@@ -142,6 +142,7 @@ sys_link(void)
 
   ilock(ip);
   //TODO - Not sure why ip can't be a directory inode. Maybe "links" are T_FILE?
+  //OK maybe because kexec() calls this, cannot kexec() a directory
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
@@ -518,31 +519,17 @@ sys_find(void)
   //Actually we can go from the root
   //namei() must be inside a transaction (begin_op <-> end_op pair)
   struct inode *ipath = namei("/");
-  // struct inode *ipath = namei("cat");
-  // struct dirent dent;
-  // for (uint off = 0; off < ipath->size; off += sizeof(dent))
-  // {
-  //   if (readi(ipath, 0, (uint64)&dent, off, sizeof(dent)) != sizeof(dent))
-  //   {
-  //     printf("sys_find: readi error\n");
-  //     end_op();
-  //     return -1;
-  //   }
-  //   if(dent.inum == 0)
-  //     break;
-  //   printf("inum: %d, name: %s, ", dent.inum, dent.name);
-  //   struct inode *ientry = namei(dent.name);
-  //   printf("type: %d\n", ientry->type);
-  // }
   list(ipath, "/");
-  // printf("inum: %d, type: %d\n", ipath->inum, ipath->type);
+
+  iput(ipath);
+  iput(dp);
 
   end_op();
   return 0;
-  // list(ipath);
 }
 
 //List all entries under a given inode
+//namei() requires full path, so we pass parent path in recursive calls
 static void
 list(struct inode *ipath, char *parent)
 {
@@ -565,8 +552,47 @@ list(struct inode *ipath, char *parent)
     iunlock(ipath);
     if(dent.inum == 0)
       break;
-    printf("inum: %d, name: %s, ", dent.inum, dent.name);
-    struct inode *ientry = namei(dent.name);
+
+    char fpath[MAXPATH] = {0};
+    //If parent is '/' then we don't need to "join"
+    if (*parent != '/')
+    {
+      int i = 0;
+      while (1)
+      {
+        fpath[i] = parent[i];
+        i++;
+        if (!parent[i])
+          break;
+      }
+
+      fpath[i++] = '/';
+
+      while (1)
+      {
+        fpath[i] = dent.name[i-strlen(parent)-1];
+        i++;
+        if (!dent.name[i-strlen(parent)-1])
+          break;
+      }
+    }
+    else
+    {
+      int i = 0;
+      while (1)
+      {
+        fpath[i] = dent.name[i];
+        i++;
+        if (!dent.name[i])
+          break;
+      }
+    }
+    // printf("inum: %d, name: %s, fullpath: %s, ", dent.inum, dent.name, fullpath);
+    printf("inum: %d, name: %s, fullpath: %s, ", dent.inum, dent.name, fpath);
+    // struct inode *ientry = namei(dent.name);
+    // struct inode *ientry = namei(fullpath);
+    struct inode *ientry = namei(fpath);
+    ilock(ientry);
     printf("type: %d\n", ientry->type);
 
     //Recursively drills down the directory
@@ -574,10 +600,26 @@ list(struct inode *ipath, char *parent)
     {
       //Skip . and .. to prevent inf recursion
       if (dent.name[0] != '.')
-        list(ientry, dent.name);
+      {
+        iunlock(ientry);
+        // list(ientry, fullpath);
+        list(ientry, fpath);
+        //list(ientry, dent.name);
+      }
       else
+      {
         printf("list: skipping . and ..\n");
+        iunlock(ientry);
+      }
     }
+    //NOTE: Man this took me a few hours to figure out
+    //So if I don't unlock(ientry), it actually breaks the NEXT kexec()
+    //Because we never iunlock any T_FILE inodes, so in the next kexec()
+    //say we want to do kexec("ls"), then ls is actually locked,
+    //and ilock(ip) in kexec() is going to hang
+    //LINK - kernel/exec.c#list_hang
+    else
+      iunlock(ientry);
   }
 }
 

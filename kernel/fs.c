@@ -446,14 +446,65 @@ ireclaim(int dev)
 // If there is no such block, bmap allocates one.
 // returns 0 if out of disk space.
 //NOTE - bmap() returns the block number
+// static uint
+// bmap(struct inode *ip, uint bn)
+// {
+//   uint addr, *a;
+//   struct buf *bp;
+
+//   if(bn < NDIRECT){
+//     if((addr = ip->addrs[bn]) == 0){
+//       addr = balloc(ip->dev);
+//       if(addr == 0)
+//         return 0;
+//       ip->addrs[bn] = addr;
+//     }
+//     return addr;
+//   }
+//   bn -= NDIRECT;
+
+//   if(bn < NINDIRECT){
+//     // Load indirect block, allocating if necessary.
+//     //NOTE - addrs[NDIRECT] is the last element, which holds the block number of the INDIRECT block.
+//     // Then it goes into the indirect block, and search for the index bn-NDIRECT. Allocate if empty.
+//     if((addr = ip->addrs[NDIRECT]) == 0){
+//       //ANCHOR[id=balloc_ex_1]
+//       addr = balloc(ip->dev);
+//       if(addr == 0)
+//         return 0;
+//       ip->addrs[NDIRECT] = addr;
+//     }
+//     //Each buf* has BSIZE of uchar in buf->data.
+//     //And each blockn is an uint (4 bytes), so in total 256 blockns.
+//     bp = bread(ip->dev, addr);
+//     a = (uint*)bp->data;
+//     if((addr = a[bn]) == 0){
+//       //ANCHOR[id=balloc_ex_2]
+//       addr = balloc(ip->dev);
+//       if(addr){
+//         a[bn] = addr;
+//         log_write(bp);
+//       }
+//     }
+//     brelse(bp);
+//     return addr;
+//   }
+
+//   panic("bmap: out of range");
+// }
+
 static uint
 bmap(struct inode *ip, uint bn)
 {
-  uint addr, *a;
-  struct buf *bp;
+  uint addr, addr1, addr2, *a, *a1, *a2;
+  struct buf *bp, *bp1, *bp2;
 
-  if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0){
+  // printf("bn: %d\n", bn);
+
+  if(bn < NDIRECT)
+  {
+    if((addr = ip->addrs[bn]) == 0)
+    {
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
@@ -463,29 +514,81 @@ bmap(struct inode *ip, uint bn)
   }
   bn -= NDIRECT;
 
-  if(bn < NINDIRECT){
+  if(bn < NINDIRECT)
+  {
     // Load indirect block, allocating if necessary.
     //NOTE - addrs[NDIRECT] is the last element, which holds the block number of the INDIRECT block.
     // Then it goes into the indirect block, and search for the index bn-NDIRECT. Allocate if empty.
-    if((addr = ip->addrs[NDIRECT]) == 0){
+    if((addr = ip->addrs[NDIRECT]) == 0)
+    {
       //ANCHOR[id=balloc_ex_1]
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
       ip->addrs[NDIRECT] = addr;
     }
+    //Each buf* has BSIZE of uchar in buf->data.
+    //And each blockn is an uint (4 bytes), so in total 256 blockns.
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
+    if((addr = a[bn]) == 0)
+    {
       //ANCHOR[id=balloc_ex_2]
       addr = balloc(ip->dev);
-      if(addr){
+      if(addr)
+      {
         a[bn] = addr;
         log_write(bp);
       }
     }
     brelse(bp);
     return addr;
+  }
+  //Skip the 256 direct blocks as well
+  bn -= NINDIRECT;
+  
+  //if(bn >= NINDIRECT && bn < NINDIRECT * NINDIRECT + NINDIRECT + NDIRECT)
+  if(bn < NINDIRECT * NINDIRECT)
+  {
+    // printf("bigfile\n");
+    //double indirect - first indirect
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+    {
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1] = addr;
+    }
+    bp1 = bread(ip->dev, addr);
+    a1 = (uint*)bp1->data;
+    //e.g. let's say bn-11=1989, 1989-256=1733
+    //first indirect blockn=1733/256-1
+    if((addr1 = a1[(uint)(bn / NINDIRECT)]) == 0)
+    {
+      addr1 = balloc(ip->dev);
+      if(addr1)
+      {
+        a1[(uint)(bn / NINDIRECT)] = addr1;
+        log_write(bp1);
+      }
+    }
+    brelse(bp1);
+    //double indirect - second indirect
+    //now we have addr1
+    bp2 = bread(ip->dev, addr1);
+    a2 = (uint*)bp2->data;
+    //second indirect blockn=1989%256-1=196
+    if((addr2 = a2[bn % NINDIRECT]) == 0)
+    {
+      addr2 = balloc(ip->dev);
+      if(addr2)
+      {
+        a2[(uint)(bn % NINDIRECT)] = addr2;
+        log_write(bp2);
+      }
+    }
+    brelse(bp2);
+    return addr2;
   }
 
   panic("bmap: out of range");

@@ -219,3 +219,19 @@ The code is in `sysfile.c` in branch `fs_touch`. This is a pretty easy piece of 
 Now I want to write `find`. 
 
 Jeez the API is so convoluted. Somehow all the conveninet functions like `iget()` are `static`, and there is NO WAY to call these functions from the API. For example, I cannot get an `struct inode` from a random path, such as "/". I don't understand why this is so convoluted. I wonder what is the Windows way to do it.
+
+//TODO: Add descriptions about `find.c`
+
+### Big File implementation
+
+Hmmm, I'm trying to understand what the specification wants:
+
+> You'll change the xv6 file system code to support a "doubly-indirect" block in each inode, containing 256 addresses of singly-indirect blocks, each of which can contain up to 256 addresses of data blocks. The result will be that a file will be able to consist of up to 65803 blocks, or 256*256+256+11 blocks (11 instead of 12, because we will sacrifice one of the direct block numbers for the double-indirect block). 
+
+From my understanding the scheme looks like this:
+
+addr[0] - addr[10]: pointing to 11 direct blocks
+addr[11]: 1 `uint` that points to 256 direct/data blocks
+addr[12]: 1 `uint` that points to 256 indirect/pointer blocks, and each of these indirect/pointer blocks points to 256 direct/data blocks
+
+For examples, let's say we have `bn = 2000`, so 2000-11=1989. Then we subtract 256 from it, and 1989-256=1733, which means that this is the No.1733 block (assuming we count from block No.1) in the 256*256 blocks. Now we need to divide it by 256. 1733/256=6, and 1733%256=197. So we can say, when bn=2000, the block is at the 198th layer-2 block (array index 196) pointed to by the 7th layer-1 block (array index 5).

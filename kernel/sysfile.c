@@ -587,10 +587,7 @@ list(struct inode *ipath, char *parent)
           break;
       }
     }
-    // printf("inum: %d, name: %s, fullpath: %s, ", dent.inum, dent.name, fullpath);
     printf("inum: %d, name: %s, fullpath: %s, ", dent.inum, dent.name, fpath);
-    // struct inode *ientry = namei(dent.name);
-    // struct inode *ientry = namei(fullpath);
     struct inode *ientry = namei(fpath);
     ilock(ientry);
     printf("type: %d\n", ientry->type);

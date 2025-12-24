@@ -210,17 +210,29 @@ There are other data structures such as `struct dirent`, `struct itable`, `struc
 
 ### Creating fs syscalls
 
+#### sys_touch()
+
 I want to create something similar to `sys_open()`, but only for creating empty, new files. The userland program is `touch.c` which calls the sys call for heavy lifting. The syscall is named `sys_touch()` for simplicity.
 
 Essentially, this is a smaller version of `sys_open()` which embeds a smaller version of `create()`.
 
 The code is in `sysfile.c` in branch `fs_touch`. This is a pretty easy piece of code as I only need to copy from `create()` and `sys_open()`.
 
+#### sys_find
+
 Now I want to write `find`. 
 
 Jeez the API is so convoluted. Somehow all the conveninet functions like `iget()` are `static`, and there is NO WAY to call these functions from the API. For example, I cannot get an `struct inode` from a random path, such as "/". I don't understand why this is so convoluted. I wonder what is the Windows way to do it.
 
-//TODO: Add descriptions about `find.c`
+OK I'm done with most of it. Basically, my `sys_find()` doesn't find names yet, but it recursively goes over all directories and files, so what is left to do, is to match the names. This shouldn't be too hard. I'll describe how I reach this point. There was a lot of learning these 2 days.
+
+The pseudo code looks like this:
+
+```
+First we go from the root directory
+
+Then we 
+```
 
 ### Big File implementation
 
@@ -235,3 +247,23 @@ addr[11]: 1 `uint` that points to 256 direct/data blocks
 addr[12]: 1 `uint` that points to 256 indirect/pointer blocks, and each of these indirect/pointer blocks points to 256 direct/data blocks
 
 For examples, let's say we have `bn = 2000`, so 2000-11=1989. Then we subtract 256 from it, and 1989-256=1733, which means that this is the No.1733 block (assuming we count from block No.1) in the 256*256 blocks. Now we need to divide it by 256. 1733/256=6, and 1733%256=197. So we can say, when bn=2000, the block is at the 198th layer-2 block (array index 196) pointed to by the 7th layer-1 block (array index 5).
+
+This is a pretty straightforward project. I passed the `bigfile` test but I'm not done yet. I need to modify `itrunc()` too. I'm a bit weak on the consistency these weeks. I need to do better. But at least I should be able to complete all labs in a few weeks.
+
+`itrunc()` is also pretty straightforward to implement. We basically go through the whole FS and `bfree()` any block that is being used -- by checking whether its `blockno` is 0 or not. The only modification I needed to make was for the doubly indirect blocks:
+
+- First read addrs[NDIRECT+1] block, which contains the blockno of 256 layer-1 indirect blocks;
+- For each of the layer-1 indirect blocks, if they are "active", read the block, and go through the 256 layer-2 direct blocks;
+- Free any "active" layer-2 direct blocks;
+- Once all 256 layer-2 direct blocks have been checked/freed, free the respective layer-1 indirect block
+- Once all 256 layer-1 indirect blocks have been checked/freed, free addrs[NDIRECT+1]
+
+In above operations, make sure to set the blockno to 0 once called `bfree()` so that future `balloc()` can use the block.
+
+Passed both `bigfile` and `usertests -q`.
+
+```
+OK
+test lazy_copy: OK
+ALL TESTS PASSED
+```

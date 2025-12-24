@@ -603,7 +603,7 @@ itrunc(struct inode *ip)
   struct buf *bp;
   uint *a;
 
-  //NOTE - Start with indirect blocks
+  //NOTE - Start with direct blocks
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -614,11 +614,12 @@ itrunc(struct inode *ip)
     }
   }
 
-  //NOTE - Indirect blocks
+  //NOTE - Single indirect blocks
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
     for(j = 0; j < NINDIRECT; j++){
+      //TODO: Why not set a[j]=0?
       if(a[j])
         bfree(ip->dev, a[j]);
     }
@@ -626,6 +627,35 @@ itrunc(struct inode *ip)
     //NOTE - The indirect block itself
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  //Double indirect blocks
+  if(ip->addrs[NDIRECT+1])
+  {
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    //a[j] is indirect, don't bfree until the second layer is done
+    for(j = 0; j < NINDIRECT; j++)
+    {
+      if(a[j])
+      {
+        //Recall the 2nd argument of bread() is blockno
+        struct buf *bp2 = bread(ip->dev, a[j]);
+        uint *a2 = (uint*)bp2->data;
+        for(int k = 0; k < NINDIRECT; k++)
+        {
+          //Free layer-2 direct blocks, 256 for each layer-1 block
+          if(a2[k])
+            bfree(ip->dev, a2[k]);
+        }
+        brelse(bp2);
+        //Free layer-1 indirect blocks
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;

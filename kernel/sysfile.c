@@ -402,21 +402,130 @@ sys_open(void)
 }
 
 // uint64
-// sys_symlink(void)
+// sys_write(void)
 // {
-//   //Default to creating a new slink
-//   char path[MAXPATH];
+//   struct file *f;
 //   int n;
-//   struct inode *ip;
-
-//   if((n = argstr(0, path, MAXPATH)) < 0)
+//   uint64 p;
+  
+//   argaddr(1, &p);
+//   argint(2, &n);
+//   if(argfd(0, 0, &f) < 0)
 //     return -1;
 
-//   begin_op();
-
-//   ip = create(path, T_SLINK, 0, 0);
-  
+//   return filewrite(f, p, n);
 // }
+
+uint64
+sys_symlink(void)
+{
+  char path[MAXPATH];
+  int fd;
+  struct file *f;
+  struct inode *ip;
+  int addr = 0;
+  int nchar = 0;
+
+  //Fetch cli argument
+  if (argstr(0, path, MAXPATH) < 0)
+  {
+    printf("sys_symlink: path error\n");
+    return -1;
+  }
+  argint(1, &addr);
+  if (!addr)
+  {
+    printf("sys_symlink: addr error\n");
+    return -1;
+  }
+  argint(2, &nchar);
+  if (nchar <= 0)
+  {
+    printf("sys_symlink: nchar <= 0\n");
+    return -1;
+  }
+
+  //Increment the number of outstanding syscalls
+  begin_op();
+
+  //Create a new empty file, mimic create()
+  struct inode *dp;
+  char name[DIRSIZ];
+
+  if ((dp = nameiparent(path, name)) == 0)
+  {
+    printf("sys_symlink: cannot locate parent path\n");
+    return -1;
+  }
+
+  ilock(dp);
+
+  //does name exist or not
+  if ((ip = dirlookup(dp, name, 0)) != 0)
+  {
+    // name already exists
+    iunlockput(dp);
+    iput(ip);
+    printf("sys_symlink: file already exists\n");
+    return -1;
+  }
+
+  //allocate inode
+  if ((ip = ialloc(dp->dev, T_SLINK)) == 0)
+  {
+    iunlockput(dp);
+    printf("sys_symlink: failed to allocate inode\n");
+    return -1;
+  }
+
+  ilock(ip);
+  ip->nlink = 1;
+  iupdate(ip);
+
+  if (dirlink(dp, name, ip->inum) < 0)
+    goto fail;
+
+  iunlockput(dp);
+
+  //Allocate a new file and a new file descriptor
+  if ((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0)
+  {
+    if (f)
+      fileclose(f);
+    iunlockput(ip);
+    end_op();
+    printf("sys_symlink: failed to allocate file or file descriptor\n");
+    return -1;
+  }
+
+  f->type = FD_INODE;
+  f->off = 0;
+  f->ip = ip;
+  f->readable = O_WRONLY;
+  f->writable = O_WRONLY || O_RDWR;
+
+  iunlock(ip);
+  filewrite(f, addr, /* strlen((char *)addr)*/ nchar);
+
+  //Debugging: Is it OK to readout from inode?
+  ilock(ip);
+  printf("size of inode: %d\n", ip->size);
+  int size = ip->size;
+  char test[256] = {0};
+  readi(ip, 0, (uint64)test, 0, size);
+  printf("test is: %s\n", test);
+  iunlock(ip);
+  end_op();
+
+  return fd;
+
+fail:
+  ip->nlink = 0;
+  iupdate(ip);
+  iunlockput(ip);
+  iunlockput(dp);
+  return 0;
+}
 
 //Only creates new, empty file
 //If parent directory does not exist, exit with an error message

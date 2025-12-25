@@ -198,6 +198,7 @@ UPROGS=\
 	$U/_touch\
 	$U/_find\
 	$U/_namei\
+	$U/_symlink\
 
 
 

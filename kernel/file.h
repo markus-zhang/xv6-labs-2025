@@ -27,9 +27,6 @@ struct inode {
   short nlink;
   uint size;
   uint addrs[NDIRECT+2];
-
-  //NOTE: Symbolic Link Lab
-  uint symlkinum;
 };
 
 // map major device number to device functions.

@@ -27,6 +27,7 @@ int uptime(void);
 int touch(const char*);
 int find(const char*);
 int namei(const char*);
+int symlink(const char*, const char*, int);
 
 // ulib.c
 int stat(const char*, struct stat*);

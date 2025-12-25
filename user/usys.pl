@@ -45,3 +45,4 @@ entry("uptime");
 entry("touch");
 entry("find");
 entry("namei");
+entry("symlink");

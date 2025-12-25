@@ -416,4 +416,28 @@ OK first trail failed very quickly. I tried to add a `char[]` in `inode` and `di
 
 Actually, I'm thinking, it's a lot easier to store the inum of the target path. But this still needs a piece of new data to be stored somewhere, and not in `inode` or `dinode`...hmmm, that's inconvenient.
 
-OK I think I got it, re-reading the OSTEP book reveals that a symbolic link in Linux (xv6 can follow the same principle) simply holds the pathname in the file itself. So that means I need to `writei()` and `readi()`, I think. Gotta take a break and figure it out tomorrow.
+OK I think I got it, re-reading the OSTEP book reveals that a symbolic link in Linux (xv6 can follow the same principle) simply holds the pathname in the file itself. So that means I need to write into the symbolic link file, I think. Gotta take a break and figure it out tomorrow.
+
+#### Second trial
+
+I read a bit about `sys_write()`. I think the process is like this:
+
+First the program creates the symbolic link file. Then it opens the file and get a file descriptor of it, say, `fd`. Then I can use `write(fd, {targeted pathname}, strlen({targeted pathname}))` to write into the file. 
+
+The first step is the same as `sys_touch()` so most of the code is already there. I need to check whether I can skip the second step and `write()` in the first step.
+
+For this trial I'll ignore recursive symbolic links (symlink pointing to another symlink).
+
+Got it! I managed to write something into the file. Right now it is just `touch()` + write stuffs into it, so nothing really related to symbolic link, but the primary functionality is there.
+
+Things learned:
+- `filewrite()` needs to lock the `inode` (even when it doesn't accept the `inode` as an argument, it looks for the `inode` by itself and tries to acquire a lock), so I need to put it AFTER `iunlock(ip)`.
+
+Next step is to write the actual implementation.
+- [X] Change `symlink.c` so that it reads target filename from cli argument (e.g. `symlink newlink ~/README`);
+- [X] Change `inode` type to `T_SLINK`;
+- [X] Use readi() to display the target filename, so that we can use it to find the `inode` of the target file;
+
+Great! Looks like all ^ works. I'll do more tests to make sure I didn't lock something unexpectedly.
+
+That's pretty much everything for `sys_symlink()`. Now I need to deal with the other syscalls. For examples, if I put up a symbolic link for `bigfile`, I should be able to execute it as if I'm executing `bigfile`. If I put up a symbolic link for say `README`, I should be able to `cat` it (right now `cat` simply shows its content, which is the filename it points to) as if I `cat README`.

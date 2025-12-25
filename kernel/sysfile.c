@@ -134,15 +134,17 @@ sys_link(void)
   if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
     return -1;
 
+  //namei() needs to live in a transaction (begin_op <-> end_op).
   begin_op();
+  //Fetch the inode of path old
   if((ip = namei(old)) == 0){
     end_op();
     return -1;
   }
 
+  //Every time we read or write an inode, we need to lock it first
   ilock(ip);
-  //TODO - Not sure why ip can't be a directory inode. Maybe "links" are T_FILE?
-  //OK maybe because kexec() calls this, cannot kexec() a directory
+  //Hard link avoids directories to prevent endless recursion, need to figure out why
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
@@ -150,14 +152,17 @@ sys_link(void)
   }
 
   ip->nlink++;
+  //Every time we modify an inode, we need to update the on-disk dinode.
+  //Caller of iupdate() must hold ip->lock.
   iupdate(ip);
   iunlock(ip);
 
-  //NOTE - new parent directory must exist --
+  //Find the inode of the parent path of new (and dump the filename to name)
   if((dp = nameiparent(new, name)) == 0)
     goto bad;
   ilock(dp);
-  //NOTE - (continued from ^) and on the same device as the existing inode (ip)
+  //dirlink() writes a new struct dirent (inum, name) into dp
+  //If name already exists under dp, it returns -1
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
@@ -395,6 +400,23 @@ sys_open(void)
 
   return fd;
 }
+
+// uint64
+// sys_symlink(void)
+// {
+//   //Default to creating a new slink
+//   char path[MAXPATH];
+//   int n;
+//   struct inode *ip;
+
+//   if((n = argstr(0, path, MAXPATH)) < 0)
+//     return -1;
+
+//   begin_op();
+
+//   ip = create(path, T_SLINK, 0, 0);
+  
+// }
 
 //Only creates new, empty file
 //If parent directory does not exist, exit with an error message

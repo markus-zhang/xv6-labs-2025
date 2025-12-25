@@ -31,6 +31,9 @@ struct superblock {
 // #define MAXFILE (NDIRECT + NINDIRECT)
 #define MAXFILE (NDIRECT + NINDIRECT + NINDIRECT * NINDIRECT)
 
+// Directory is a file containing a sequence of dirent structures.
+#define DIRSIZ 14
+
 // On-disk inode structure
 struct dinode {
   short type;           // File type
@@ -45,6 +48,9 @@ struct dinode {
   //double-indirect = pointing to a 256-uint indirect block, 
   //each uint pointing to a 256-uint blockn block
   uint addrs[NDIRECT+2];   // Data block addresses
+
+  //NOTE: Symbolic Link Lab
+  uint symlkinum;
 };
 
 // Inodes per block.
@@ -58,9 +64,6 @@ struct dinode {
 
 // Block of free map containing bit for block b
 #define BBLOCK(b, sb) ((b)/BPB + sb.bmapstart)
-
-// Directory is a file containing a sequence of dirent structures.
-#define DIRSIZ 14
 
 // The name field may have DIRSIZ characters and not end in a NUL
 // character.

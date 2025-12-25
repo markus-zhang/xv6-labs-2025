@@ -267,3 +267,153 @@ OK
 test lazy_copy: OK
 ALL TESTS PASSED
 ```
+
+### Symbolic link
+
+I never used symbolic links in Linux before, so I decided to try it out in command line. I have an empty file `foo.txt`:
+
+```
+markus@t470s:~/dev$ stat foo.txt
+  File: foo.txt
+  Size: 0         	Blocks: 0          IO Block: 4096   regular empty file
+Device: 10302h/66306d	Inode: 10505950    Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1000/  markus)   Gid: ( 1000/  markus)
+Access: 2025-12-24 07:50:08.104978253 -0500
+Modify: 2025-12-19 10:59:03.471543169 -0500
+Change: 2025-12-19 10:59:03.471543169 -0500
+ Birth: 2025-12-19 10:59:03.471543169 -0500
+```
+
+Then I ran `ln --symbolic foo.txt foo.txt.sl`:
+
+```
+markus@t470s:~/dev$ stat foo.txt.sl 
+  File: foo.txt.sl -> foo.txt
+  Size: 7         	Blocks: 0          IO Block: 4096   symbolic link
+Device: 10302h/66306d	Inode: 10494627    Links: 1
+Access: (0777/lrwxrwxrwx)  Uid: ( 1000/  markus)   Gid: ( 1000/  markus)
+Access: 2025-12-24 07:51:05.497835154 -0500
+Modify: 2025-12-24 07:51:04.329817680 -0500
+Change: 2025-12-24 07:51:04.329817680 -0500
+ Birth: 2025-12-24 07:51:04.329817680 -0500
+```
+
+So it looks like symbolic link is a different type of file (probably not a file but of the type of symbolic link).
+
+From top of head, I probably need to make sure:
+
+- xv6 knows how to create a symbolic link
+- xv6 knows how to exec a symbolic link
+- xv6 knows how to rm a symbolic link
+- Anything else?
+
+places to touch (just search places referencing T_FILE should give me a good list):
+- `stat.h`
+- `sys_open()`
+- `create()`
+- `ls.c`
+
+I'll read and understand `sys_link()` first. It has 3 arguments, `new`, `old` and `name`. `new` is the path new as a link to the same inode as `old`.
+
+The code is straightforward:
+- Fetch and check CLI arguments;
+- Open a transaction by calling `begin_op()`;
+- Fetch the inode of `old` as `ip`, and check if it is a directory inode;
+- Increment `ip->nlink`, and update the on disk `dinode`;
+- Fetch the inode of the parent `inode` of `new` as `dp`, and dump the filename into `name`;
+- If `dp` doesn't have such a directory entry, create one using the pair of `(inum, name)`
+- Close the transaction by calling `end_op()`;
+
+For each `inode` operation, the program wraps up the operation with `ilock()` and `iunlock()` (or `iunlockput()`).
+
+#### Use cases
+
+From my understanding, symbolic link is just a different file (with a different type). It does not increment `nlink`.
+
+Think about some usage of symbolic links in Linux:
+
+```sh
+touch foo.txt
+ln --symbolic foo.txt foo.txt.sl
+echo "Hello, world!" > foo.txt
+cat foo.txt.sl
+```
+
+The above shows "Hello, world!". So we know that somehow, `cat` needs to open the linked file. 
+
+```sh
+ln --symbolic foo.txt.sl foo.txt.sl2
+cat foo.txt.sl2
+```
+
+The above shows the string too. So we know that `cat` recursively find the linked file until it hits a real file. Looking at the code of `cat.c`:
+
+```C
+for(i = 1; i < argc; i++){
+  if((fd = open(argv[i], O_RDONLY)) < 0){
+    fprintf(2, "cat: cannot open %s\n", argv[i]);
+    exit(1);
+  }
+  cat(fd);
+  close(fd);
+}
+```
+
+We see that the code calls `open()`, so we probably need to figure out how to teach `open()` to find the linked file/directory of a symbolic link. Note that there can be an undeterminable number of hops so we need a bit of recursion here.
+
+**sys_open() research:**
+
+Looking at the code in `sys_open()` with `omode` as `O_RDONLY`,
+
+```C
+} else {
+  if((ip = namei(path)) == 0){
+    end_op();
+    return -1;
+  }
+```
+
+^ `ip` is the `inode` for the symbolic link. I think I can add a field into `inode` to indicate the linked file (this can also be a symbolic link), so that `sys_open()` can get the path of a real file. I don't think we should put that functionality in `namex()` because it is used in a lot of other places, e.g. `sys_link()`. I don't want to break it.
+
+Once this change is done, there is nothing else to modify in `sys_open()` since we already fetched the `inode` for the linked file.
+
+The proposed change is as following. I want to make sure that it is protected by locks properly.
+
+```C
+struct *inode tempip = ip;
+if (tempip->type == T_SLINK)
+{
+  while (tempip->type == T_SLINK)
+  {
+    ilock(tempip);
+    if ((ip = namei(tempip->targetpath)) == 0)
+    {
+      iunlockput(tempip);
+      end_op();
+      return -1;
+    }
+    iunlock(tempip);
+  }
+  //Separate iunlock and iput as still need tempip in next loop
+  iput(tempip);
+}
+```
+
+**create() research**
+
+When we create a new symbolic link, we definitely need to create a new FS item. For hard links, `sys_link()` doesn't create any new item (hard link does not even have its own type in `stat.h`), but gets away by  creating a directory entry by calling `dirlink()`.
+
+Actually, maybe I don't need to change the code in `create()`. Since `create()` doesn't know the target path, `create()` should just create the `inode` and then `sys_slink()` can change the value of `inode.target` as it does know the target path.
+
+**chdir() research**
+
+Since symbolic links can target directories, this syscall needs to figure out the real path. I kinda think I should wrap up the ^ proposed change and move to a function? Or maybe not, because of all those locks...
+
+
+#### First trail
+
+OK first trail failed very quickly. I tried to add a `char[]` in `inode` and `dinode` to store the target path of a symbolic link, but `mkfs.c` actually checks whether `(BSIZE % sizeof(struct dinode)) == 0`, which means I can't alter these two `struct` easily. I mean, I could still alter the number of bytes and perhaps make it work, but I need to check if I can store the information in some other places.
+
+Actually, I'm thinking, it's a lot easier to store the inum of the target path. But this still needs a piece of new data to be stored somewhere, and not in `inode` or `dinode`...hmmm, that's inconvenient.
+
+OK I think I got it, re-reading the OSTEP book reveals that a symbolic link in Linux (xv6 can follow the same principle) simply holds the pathname in the file itself. So that means I need to `writei()` and `readi()`, I think. Gotta take a break and figure it out tomorrow.

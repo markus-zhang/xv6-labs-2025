@@ -193,6 +193,8 @@ iinit()
   initlock(&itable.lock, "itable");
   for(i = 0; i < NINODE; i++) {
     initsleeplock(&itable.inode[i].lock, "inode");
+    //Symbolic Link Lab
+    //memset(itable.inode[i].namelnk, 0, DIRSIZ);
   }
 }
 

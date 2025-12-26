@@ -46,3 +46,4 @@ entry("touch");
 entry("find");
 entry("namei");
 entry("symlink");
+entry("symlinktarget");

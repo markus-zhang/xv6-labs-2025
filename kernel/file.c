@@ -121,20 +121,48 @@ fileread(struct file *f, uint64 addr, int n)
   if(f->readable == 0)
     return -1;
 
-  if(f->type == FD_PIPE){
+  if(f->type == FD_PIPE)
+  {
     r = piperead(f->pipe, addr, n);
-  } else if(f->type == FD_DEVICE){
+  } 
+  else if(f->type == FD_DEVICE)
+  {
     if(f->major < 0 || f->major >= NDEV || !devsw[f->major].read)
       return -1;
       //NOTE - I think each device has to setup decsw, like this one:
       //LINK - kernel/file.h#decsw_setup_ex
     r = devsw[f->major].read(1, addr, n);
-  } else if(f->type == FD_INODE){
+  } 
+  else if(f->type == FD_INODE)
+  {
     ilock(f->ip);
+    //For symlink, gotta find the linked file
+    while (f->ip->type == T_SLINK)
+    {
+      char target[256] = {0};
+      readi(f->ip, 0, (uint64)target, 0, f->ip->size);
+      iunlock(f->ip);
+      //namei() should live in a transaction
+      begin_op();
+      if ((f->ip = namei(target)) == 0)
+      {
+        end_op();
+        return -1;
+      }
+      end_op();
+      printf("target: %s\n", target);
+      ilock(f->ip);
+    }
     if((r = readi(f->ip, 1, addr, f->off, n)) > 0)
       f->off += r;
     iunlock(f->ip);
-  } else {
+  }
+  // else if(f->type == FD_SLINK)
+  // {
+  //   printf("fileread: I'm a symbolic link!\n");
+  // } 
+  else 
+  {
     panic("fileread");
   }
 

@@ -105,6 +105,7 @@ extern uint64 sys_touch(void);
 extern uint64 sys_find(void);
 extern uint64 sys_namei(void);
 extern uint64 sys_symlink(void);
+extern uint64 sys_symlinktarget(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -134,6 +135,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_find]    sys_find,
 [SYS_namei]   sys_namei,
 [SYS_symlink]   sys_symlink,
+[SYS_symlinktarget]   sys_symlinktarget,
 };
 
 void

@@ -365,6 +365,35 @@ sys_open(void)
     }
   }
 
+  //Symbolic link code:
+  //Should actually open the linked file. 
+  //Need to find the last linked file for multiple symbolic links
+  //struct inode *tempip = ip;
+  //ANCHOR[id=symlink_open]
+  // if(ip->type == T_SLINK)
+  // {
+  //   //iunlock(ip);
+  //   //tempip is private so no need to lock/unlock
+  //   while (ip->type == T_SLINK)
+  //   {
+  //     char target[256] = {0};
+  //     readi(ip, 0, (uint64)target, 0, ip->size);
+  //     //We need to switch ip so unlock the current one first
+  //     iunlock(ip);
+  //     if ((ip = namei(target)) == 0)
+  //     {
+  //       //iunlockput(tempip);
+  //       end_op();
+  //       return -1;
+  //     }
+  //     //iunlock(tempip);
+  //     //Lock ip before the next loop (or before quitting the loop if ip->type != T_SLINK)
+  //     ilock(ip);
+  //   }
+  //   //Do not unlock the new ip as the rest of the code depends on it being locked
+  //   //However, do make sure to unlock the original symlink ip
+  // }
+
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
     end_op();
@@ -400,21 +429,6 @@ sys_open(void)
 
   return fd;
 }
-
-// uint64
-// sys_write(void)
-// {
-//   struct file *f;
-//   int n;
-//   uint64 p;
-  
-//   argaddr(1, &p);
-//   argint(2, &n);
-//   if(argfd(0, 0, &f) < 0)
-//     return -1;
-
-//   return filewrite(f, p, n);
-// }
 
 uint64
 sys_symlink(void)
@@ -455,6 +469,7 @@ sys_symlink(void)
   if ((dp = nameiparent(path, name)) == 0)
   {
     printf("sys_symlink: cannot locate parent path\n");
+    end_op();
     return -1;
   }
 
@@ -467,6 +482,7 @@ sys_symlink(void)
     iunlockput(dp);
     iput(ip);
     printf("sys_symlink: file already exists\n");
+    end_op();
     return -1;
   }
 
@@ -475,6 +491,7 @@ sys_symlink(void)
   {
     iunlockput(dp);
     printf("sys_symlink: failed to allocate inode\n");
+    end_op();
     return -1;
   }
 
@@ -508,13 +525,14 @@ sys_symlink(void)
   filewrite(f, addr, /* strlen((char *)addr)*/ nchar);
 
   //Debugging: Is it OK to readout from inode?
-  ilock(ip);
-  printf("size of inode: %d\n", ip->size);
-  int size = ip->size;
-  char test[256] = {0};
-  readi(ip, 0, (uint64)test, 0, size);
-  printf("test is: %s\n", test);
-  iunlock(ip);
+  // ilock(ip);
+  // printf("size of inode: %d\n", ip->size);
+  // int size = ip->size;
+  // char test[256] = {0};
+  // readi(ip, 0, (uint64)test, 0, size);
+  // printf("test is: %s\n", test);
+  // iunlock(ip);
+
   end_op();
 
   return fd;
@@ -524,6 +542,45 @@ fail:
   iupdate(ip);
   iunlockput(ip);
   iunlockput(dp);
+  return 0;
+}
+
+//Syscall for ls.c to figure out the target filename
+//I cannot use read() in ls.c as it reads the content of the target file,
+//not just the filename
+//sys_symlinktarget() should mimic fileread() but just for symlink
+//p should be user land address (e.g. a char array)
+uint64
+sys_symlinktarget(void)
+{
+  //Fetch cli arguments
+  struct file *f;
+  uint64 p;
+
+  argaddr(1, &p);
+  if(argfd(0, 0, &f) < 0)
+    return -1;
+
+  //Make sure it is a T_SLINK
+  ilock(f->ip);
+  if (f->ip->type != T_SLINK)
+  {
+    DPRINTF("sys_symlinktarget: not a symbolic link\n");
+    iunlock(f->ip);
+    return -1;
+  }
+
+  //Find the real target (for symbolic links to symbolic links)
+
+  //Find the target name
+  if(readi(f->ip, 1, (uint64)p, 0, f->ip->size) < 0)
+  {
+    DPRINTF("sys_symlinktarget: not a symbolic link\n");
+    iunlock(f->ip);
+    return -1;
+  }
+
+  iunlock(f->ip);
   return 0;
 }
 

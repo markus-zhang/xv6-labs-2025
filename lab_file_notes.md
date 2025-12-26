@@ -380,7 +380,7 @@ Once this change is done, there is nothing else to modify in `sys_open()` since 
 The proposed change is as following. I want to make sure that it is protected by locks properly.
 
 ```C
-struct *inode tempip = ip;
+struct inode *tempip = ip;
 if (tempip->type == T_SLINK)
 {
   while (tempip->type == T_SLINK)
@@ -441,3 +441,82 @@ Next step is to write the actual implementation.
 Great! Looks like all ^ works. I'll do more tests to make sure I didn't lock something unexpectedly.
 
 That's pretty much everything for `sys_symlink()`. Now I need to deal with the other syscalls. For examples, if I put up a symbolic link for `bigfile`, I should be able to execute it as if I'm executing `bigfile`. If I put up a symbolic link for say `README`, I should be able to `cat` it (right now `cat` simply shows its content, which is the filename it points to) as if I `cat README`.
+
+I modified the code for `sys_open()` but after experimenting with the code I found this is the wrong approach. //LINK - kernel/sysfile.c#symlink_open
+
+The reason is that when I ran `ls` it surprisingly showed the symlink file to be exact the same as the target file. Same file type and same size. Run the following code in xv6:
+
+```sh
+symlink foo README
+ls
+```
+
+The `ls` command gives the following content:
+```
+$ ls
+.              1 1 1024
+..             1 1 1024
+README         2 2 2425
+cat            2 3 36464
+(skipped)
+console        3 27 0
+foo            2 2 2425
+```
+
+Apparently `foo` has the wrong type (should be 4) and wrong size (should be just a few bytes to contain the target filename). The reason is that once the code changes `ip` to the one related to the target file, `f` and `fd` follow the switch and no longer relate to the symlink file (`foo`), but with the target file (`README`). Now look at the code in `ls.c`, //LINK - user/ls.c#ls_open
+
+```C
+if((fd = open(path, O_RDONLY)) < 0){
+  fprintf(2, "ls: cannot open %s\n", path);
+  return;
+}
+```
+
+`ls` directly uses the return value of `open()` so that's why it shows the weird type 2 and size of 2,425 bytes. Maybe I should modify `sys_read()` instead of `sys_open()`.
+
+BTW I should also modify `ls.c` so that it shows the link information, like in Linux you can see from the last two rows. Note that it does NOT show `foo.txt` for the last row, so I only need to find the name of the file directly pointed by a symlink file. In this case, it is `foo.txt.sl` instead of `foo.txt` for the symlink file `foo.txt.sl2`.
+```
+markus@t470s:~/dev$ ls -ali
+total 44
+10486023 drwxrwxr-x 10 markus markus 4096 Dec 24 22:58 .
+10485762 drwxr-x--- 31 markus markus 4096 Dec 21 06:43 ..
+10505950 -rw-rw-r--  1 markus markus   14 Dec 24 16:32 foo.txt
+10494627 lrwxrwxrwx  1 markus markus    7 Dec 24 07:51 foo.txt.sl -> foo.txt
+10492295 lrwxrwxrwx  1 markus markus   10 Dec 24 16:56 foo.txt.sl2 -> foo.txt.sl
+```
+
+After some inspection of the code of `ls.c`, I concluded that the modification is going to be tougher than I thought. I did add a `case T_SLINK` part, but the program does NOT go into that branch UNLESS the user is specifically using `ls` for a symbolic link, e.g. `ls foo` where foo is a symbolic link. However, in most of the use cases, people simply invoke `ls` and the program goes into the `case T_DIR` branch. `ls` then loop through all directory entries and simply prints the name.
+
+I could add a branch inside the loop, but `fd` is not pointing to the symlink, but to the directory (in this case, `.`). We only have a `struct stat` for the symlink. It has an `inode` number field, but I don't know how to use it to fetch target filename from user land.
+
+Finally I made it work:
+```
+$ ls
+.              1 1 1024
+..             1 1 1024
+README         2 2 2425
+cat            2 3 36464
+<skipped>
+console        3 27 0
+foo            4 28 6 -> README
+```
+
+#### Third trial
+
+In this trial I'll modify `sys_read()` so that `cat foo` would print the content of `README` instead of just printing out the filename `README` itself. `sys_read()` calls `fileread()` to do the bulk of the job.
+
+I managed to achieve this. Sadly this broke the previous `ls.c` code, because `ls.c` uses `read()` which calls `fileread()`, so instead of reading the string `README`, it reads something from the file `README`. I'm not sure how to fix this, let me think about it for a while.
+
+I don't think I can accomodate both cases (`T_SLINK` or not) in `fileread()`, because I need to use the same `addr`. Maybe I should just add another simpler syscall which finds the target filename of a symbolic link.
+
+OK now it's much better. I implemented `sys_symlinktarget()` which fills `p` with the string of the targeted filename. I haven't written the `while` loop that figures out the real targeted filename, for multiple level symbolic links, but this is good enough. `ls` works and `cat` works too.
+
+```
+symlink foo README
+symlink boo foo
+cat foo
+cat boo
+```
+Both `cat` work perfectly. `ls` shows `boo` is linking to `foo`, which is not exactly correct, but it does follows Linux. In Linux, symbolic links ONLY show the targeted filename. It doesn't bother to go looking for the REAL targeted filename.
+
+Next function to fix is `sys_chdir`. I can create a symbolic link for directories, but I cannot `cd` into it. I know it is ot part of the request, but I'd like to implement it.

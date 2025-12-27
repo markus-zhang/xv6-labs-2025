@@ -553,3 +553,7 @@ It's pretty simple, the only change I need to make is the `T_SLINK` branch:
     }
   }
 ```
+
+BTW I'm not exactly following the lab directions but with my own implementations. Specifically I did NOT change the code for `sys_open()`, although I did leave the commented out code for reference.
+
+I also implemented `cd` into directories pointed by symbolic links so I think this worths some extra credit. I'm glad that I didn't read the hints and follow the directions as my implementation is close to what Linux does (saving the filename into the symbolic link file itself, instead of the inode block as hinted).

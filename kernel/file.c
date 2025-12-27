@@ -14,6 +14,7 @@
 #include "proc.h"
 
 struct devsw devsw[NDEV];
+//NOTE - ftable holds ALL the open files in the system
 struct {
   struct spinlock lock;
   struct file file[NFILE];
@@ -33,6 +34,7 @@ filealloc(void)
 
   acquire(&ftable.lock);
   for(f = ftable.file; f < ftable.file + NFILE; f++){
+    //NOTE - If ref is 0, we can use/reuse it. "Allocation" is just a switch of f->ref.
     if(f->ref == 0){
       f->ref = 1;
       release(&ftable.lock);
@@ -48,6 +50,7 @@ struct file*
 filedup(struct file *f)
 {
   acquire(&ftable.lock);
+  //NOTE - Not supposed to dup a file not being referenced yet
   if(f->ref < 1)
     panic("filedup");
   f->ref++;
@@ -62,17 +65,23 @@ fileclose(struct file *f)
   struct file ff;
 
   acquire(&ftable.lock);
+  //NOTE - Not supposed to close a file not being referenced
   if(f->ref < 1)
     panic("fileclose");
   if(--f->ref > 0){
     release(&ftable.lock);
     return;
   }
+  //NOTE - Save a copy of the file object for future use
   ff = *f;
   f->ref = 0;
   f->type = FD_NONE;
   release(&ftable.lock);
 
+  //TODO - Go back to the saved copy of the file object, what are we doing?
+  // Looks like we need to close the pipe if the file object is a pipe.
+  // And if it's an inode or a device, we need to iput() it.
+  // I don't quite understand the code below, but I get what it is trying to do
   if(ff.type == FD_PIPE){
     pipeclose(ff.pipe, ff.writable);
   } else if(ff.type == FD_INODE || ff.type == FD_DEVICE){
@@ -94,6 +103,7 @@ filestat(struct file *f, uint64 addr)
     ilock(f->ip);
     stati(f->ip, &st);
     iunlock(f->ip);
+    //NOTE - addr must be of user land
     if(copyout(p->pagetable, addr, (char *)&st, sizeof(st)) < 0)
       return -1;
     return 0;
@@ -111,18 +121,48 @@ fileread(struct file *f, uint64 addr, int n)
   if(f->readable == 0)
     return -1;
 
-  if(f->type == FD_PIPE){
+  if(f->type == FD_PIPE)
+  {
     r = piperead(f->pipe, addr, n);
-  } else if(f->type == FD_DEVICE){
+  } 
+  else if(f->type == FD_DEVICE)
+  {
     if(f->major < 0 || f->major >= NDEV || !devsw[f->major].read)
       return -1;
+      //NOTE - I think each device has to setup decsw, like this one:
+      //LINK - kernel/file.h#decsw_setup_ex
     r = devsw[f->major].read(1, addr, n);
-  } else if(f->type == FD_INODE){
+  } 
+  else if(f->type == FD_INODE)
+  {
     ilock(f->ip);
+    //For symlink, gotta find the linked file
+    while (f->ip->type == T_SLINK)
+    {
+      char target[256] = {0};
+      readi(f->ip, 0, (uint64)target, 0, f->ip->size);
+      iunlock(f->ip);
+      //namei() should live in a transaction
+      begin_op();
+      if ((f->ip = namei(target)) == 0)
+      {
+        end_op();
+        return -1;
+      }
+      end_op();
+      printf("target: %s\n", target);
+      ilock(f->ip);
+    }
     if((r = readi(f->ip, 1, addr, f->off, n)) > 0)
       f->off += r;
     iunlock(f->ip);
-  } else {
+  }
+  // else if(f->type == FD_SLINK)
+  // {
+  //   printf("fileread: I'm a symbolic link!\n");
+  // } 
+  else 
+  {
     panic("fileread");
   }
 
@@ -150,6 +190,9 @@ filewrite(struct file *f, uint64 addr, int n)
     // the maximum log transaction size, including
     // i-node, indirect block, allocation blocks,
     // and 2 blocks of slop for non-aligned writes.
+    //TODO - I vaguely remember that each transaction has a maximum size.
+    // Gotta figure out where it is...might be this one:
+    //LINK - kernel/log.c#begin_op_sleep
     int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     int i = 0;
     while(i < n){

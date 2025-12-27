@@ -42,6 +42,7 @@ kexec(char *path, char **argv)
     end_op();
     return -1;
   }
+  //ANCHOR[id=list_hang]
   ilock(ip);
 
   // Read the ELF header.

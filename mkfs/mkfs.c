@@ -14,7 +14,7 @@
 #ifndef static_assert
 #define static_assert(a, b) do { switch (0) case 0: case (a): ; } while (0)
 #endif
-
+//ANCHOR[id=num_dinodes]
 #define NINODES 200
 
 // Disk layout:
@@ -262,12 +262,14 @@ iappend(uint inum, void *xp, int n)
   uint x;
 
   rinode(inum, &din);
+  //NOTE: xint() puts an uint to little endian
   off = xint(din.size);
   // printf("append inum %d at off %d sz %d\n", inum, off, n);
   while(n > 0){
     fbn = off / BSIZE;
     assert(fbn < MAXFILE);
     if(fbn < NDIRECT){
+      //din.addrs[fbn] == 0 -> not assigned yet (no block)
       if(xint(din.addrs[fbn]) == 0){
         din.addrs[fbn] = xint(freeblock++);
       }
@@ -276,6 +278,7 @@ iappend(uint inum, void *xp, int n)
       if(xint(din.addrs[NDIRECT]) == 0){
         din.addrs[NDIRECT] = xint(freeblock++);
       }
+      //read sector?
       rsect(xint(din.addrs[NDIRECT]), (char*)indirect);
       if(indirect[fbn - NDIRECT] == 0){
         indirect[fbn - NDIRECT] = xint(freeblock++);

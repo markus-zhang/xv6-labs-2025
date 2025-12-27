@@ -101,6 +101,12 @@ struct proc {
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
   struct context context;      // swtch() here to run process
+  /*NOTE - Same file as multiple open files in the same proc or multiple procs
+    fd1 = open("file", O_RDONLY);
+    fd2 = open("file", O_RDONLY);
+    ^ creates two entries in ofile[], and you can have different offsets for each.
+    And ofc we can have different fd opened on the same file by different processes.
+  */
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)

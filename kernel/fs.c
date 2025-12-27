@@ -56,6 +56,7 @@ bzero(int dev, int bno)
   bp = bread(dev, bno);
   memset(bp->data, 0, BSIZE);
   log_write(bp);
+  //ANCHOR[id=brelse_example]
   brelse(bp);
 }
 
@@ -175,6 +176,11 @@ bfree(int dev, uint b)
 // read or write that inode's ip->valid, ip->size, ip->type, &c.
 
 struct {
+  /*NOTE - lock protects 
+    1. The invariant that an inode is present in itable at most once
+    2. The invariant that an inode's ref field counts the # of in-memory pointers to the inode
+      //LINK - kernel/fs.c#itable_lock_ex1
+  */
   struct spinlock lock;
   struct inode inode[NINODE];
 } itable;
@@ -187,6 +193,8 @@ iinit()
   initlock(&itable.lock, "itable");
   for(i = 0; i < NINODE; i++) {
     initsleeplock(&itable.inode[i].lock, "inode");
+    //Symbolic Link Lab
+    //memset(itable.inode[i].namelnk, 0, DIRSIZ);
   }
 }
 
@@ -203,9 +211,23 @@ ialloc(uint dev, short type)
   struct buf *bp;
   struct dinode *dip;
 
+  /*NOTE - Loops over inode structure ON DISK,
+    Pick a free dinode, mark it allocated ON DISK,
+    then call iget() to add it into itable
+  */
   for(inum = 1; inum < sb.ninodes; inum++){
+    //NOTE - Recall that (d)inodes are also stored on disk so they occupy buffers in specific places
+    //boot | superblock | log | inodes | bitmap | data
+    //0    | 1          | 2   | 4      | 7      | 9 
+    //IBLOCK = inum / IPB + sb.inodestart = inum / (BSIZE / sizeof(struct dinode)) + sb.inodestart
+    //BSIZE=1024, sizeof(struct dinode)=64, so IBLOCK = inum/16 + sb.inodestart
+    //sb.inodestart = block number of the first inodeblock
+    //So in the first 15 iteration, IBLOCK() = sb.inodestart, in the next 16 iterations, it's 1+sb.inodestart
+    //TODO: I have no idea why inum starts from 1, not 0...
     bp = bread(dev, IBLOCK(inum, sb));
+    //One inode block has IPB=16 inodes -> each 16 loops has the same bp -> use inum%IPB for individual 64-byte inode
     dip = (struct dinode*)bp->data + inum%IPB;
+    //ANCHOR[id=free_inode]
     if(dip->type == 0){  // a free inode
       memset(dip, 0, sizeof(*dip));
       dip->type = type;
@@ -230,14 +252,27 @@ iupdate(struct inode *ip)
   struct dinode *dip;
 
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
+  //NOTE - Since we already cast bp->data to (struct dinode*),
+  //Pointer arithmetic means (struct dinode*)bp->data + 1 actually
+  //points to the byte address (bp->data + sizeof(struct dinode)),
+  //which is bp->data + 64
   dip = (struct dinode*)bp->data + ip->inum%IPB;
   dip->type = ip->type;
   dip->major = ip->major;
   dip->minor = ip->minor;
   dip->nlink = ip->nlink;
   dip->size = ip->size;
+  //NOTE - sizeof(ip->addrs) is 13 * 4 = 52 bytes, not 4 bytes!
+  //Arrays don't decay into pointers in sizeof(), as sizeof() is an OPERATOR,
+  //and arrays only decay into pointers when passed to FUNCTIONs.
   memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
   log_write(bp);
+  //TODO - Why do we need to call brelse()?
+  //At first I thought because we already signalled the FS that we want to write bp
+  //LINK - kernel/log.c#signal_log
+  //But then I realized that brelse() reduces the refcnt, but where was refcnt incremented?
+  //Eventually I found out that bread() calls bget() which increments the refcnt
+  //I'm still not 100% sure so need to debug again (bp iupdate() in GDB)
   brelse(bp);
 }
 
@@ -254,16 +289,21 @@ iget(uint dev, uint inum)
   // Is the inode already in the table?
   empty = 0;
   for(ip = &itable.inode[0]; ip < &itable.inode[NINODE]; ip++){
+    //NOTE - if inode already in itable, increment ref and return it
     if(ip->ref > 0 && ip->dev == dev && ip->inum == inum){
+      //ANCHOR[id=itable_lock_ex1]
       ip->ref++;
       release(&itable.lock);
+      //NOTE - ip is returned with NON-EXCLUSIVE access, caller needs to call ilock()
       return ip;
     }
+    //NOTE - records the position of the FIRST empty slot
     if(empty == 0 && ip->ref == 0)    // Remember empty slot.
       empty = ip;
   }
 
   // Recycle an inode entry.
+  //NOTE - If inode not found in table, and there is no empty slot, panic
   if(empty == 0)
     panic("iget: no inodes");
 
@@ -274,6 +314,7 @@ iget(uint dev, uint inum)
   ip->valid = 0;
   release(&itable.lock);
 
+  //NOTE - ip is returned with NON-EXCLUSIVE access, caller needs to call ilock()
   return ip;
 }
 
@@ -290,6 +331,9 @@ idup(struct inode *ip)
 
 // Lock the given inode.
 // Reads the inode from disk if necessary.
+//NOTE - Separation of iget() and ilock() solves some deadlock (e.g. during directory lookup)
+// Multiple processes can hold a C pointer to an inode returned by iget(),
+// but only one process can lock it at a time.
 void
 ilock(struct inode *ip)
 {
@@ -301,6 +345,7 @@ ilock(struct inode *ip)
 
   acquiresleep(&ip->lock);
 
+  //NOTE - if inode has not been read into memory, read from disk
   if(ip->valid == 0){
     bp = bread(ip->dev, IBLOCK(ip->inum, sb));
     dip = (struct dinode*)bp->data + ip->inum%IPB;
@@ -402,14 +447,66 @@ ireclaim(int dev)
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
 // returns 0 if out of disk space.
+//NOTE - bmap() returns the block number
+// static uint
+// bmap(struct inode *ip, uint bn)
+// {
+//   uint addr, *a;
+//   struct buf *bp;
+
+//   if(bn < NDIRECT){
+//     if((addr = ip->addrs[bn]) == 0){
+//       addr = balloc(ip->dev);
+//       if(addr == 0)
+//         return 0;
+//       ip->addrs[bn] = addr;
+//     }
+//     return addr;
+//   }
+//   bn -= NDIRECT;
+
+//   if(bn < NINDIRECT){
+//     // Load indirect block, allocating if necessary.
+//     //NOTE - addrs[NDIRECT] is the last element, which holds the block number of the INDIRECT block.
+//     // Then it goes into the indirect block, and search for the index bn-NDIRECT. Allocate if empty.
+//     if((addr = ip->addrs[NDIRECT]) == 0){
+//       //ANCHOR[id=balloc_ex_1]
+//       addr = balloc(ip->dev);
+//       if(addr == 0)
+//         return 0;
+//       ip->addrs[NDIRECT] = addr;
+//     }
+//     //Each buf* has BSIZE of uchar in buf->data.
+//     //And each blockn is an uint (4 bytes), so in total 256 blockns.
+//     bp = bread(ip->dev, addr);
+//     a = (uint*)bp->data;
+//     if((addr = a[bn]) == 0){
+//       //ANCHOR[id=balloc_ex_2]
+//       addr = balloc(ip->dev);
+//       if(addr){
+//         a[bn] = addr;
+//         log_write(bp);
+//       }
+//     }
+//     brelse(bp);
+//     return addr;
+//   }
+
+//   panic("bmap: out of range");
+// }
+
 static uint
 bmap(struct inode *ip, uint bn)
 {
-  uint addr, *a;
-  struct buf *bp;
+  uint addr, addr1, addr2, *a, *a1, *a2;
+  struct buf *bp, *bp1, *bp2;
 
-  if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0){
+  // printf("bn: %d\n", bn);
+
+  if(bn < NDIRECT)
+  {
+    if((addr = ip->addrs[bn]) == 0)
+    {
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
@@ -419,25 +516,81 @@ bmap(struct inode *ip, uint bn)
   }
   bn -= NDIRECT;
 
-  if(bn < NINDIRECT){
+  if(bn < NINDIRECT)
+  {
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0){
+    //NOTE - addrs[NDIRECT] is the last element, which holds the block number of the INDIRECT block.
+    // Then it goes into the indirect block, and search for the index bn-NDIRECT. Allocate if empty.
+    if((addr = ip->addrs[NDIRECT]) == 0)
+    {
+      //ANCHOR[id=balloc_ex_1]
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
       ip->addrs[NDIRECT] = addr;
     }
+    //Each buf* has BSIZE of uchar in buf->data.
+    //And each blockn is an uint (4 bytes), so in total 256 blockns.
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
+    if((addr = a[bn]) == 0)
+    {
+      //ANCHOR[id=balloc_ex_2]
       addr = balloc(ip->dev);
-      if(addr){
+      if(addr)
+      {
         a[bn] = addr;
         log_write(bp);
       }
     }
     brelse(bp);
     return addr;
+  }
+  //Skip the 256 direct blocks as well
+  bn -= NINDIRECT;
+  
+  //if(bn >= NINDIRECT && bn < NINDIRECT * NINDIRECT + NINDIRECT + NDIRECT)
+  if(bn < NINDIRECT * NINDIRECT)
+  {
+    // printf("bigfile\n");
+    //double indirect - first indirect
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+    {
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1] = addr;
+    }
+    bp1 = bread(ip->dev, addr);
+    a1 = (uint*)bp1->data;
+    //e.g. let's say bn-11=1989, 1989-256=1733
+    //first indirect blockn=1733/256-1
+    if((addr1 = a1[(uint)(bn / NINDIRECT)]) == 0)
+    {
+      addr1 = balloc(ip->dev);
+      if(addr1)
+      {
+        a1[(uint)(bn / NINDIRECT)] = addr1;
+        log_write(bp1);
+      }
+    }
+    brelse(bp1);
+    //double indirect - second indirect
+    //now we have addr1
+    bp2 = bread(ip->dev, addr1);
+    a2 = (uint*)bp2->data;
+    //second indirect blockn=1989%256-1=196
+    if((addr2 = a2[bn % NINDIRECT]) == 0)
+    {
+      addr2 = balloc(ip->dev);
+      if(addr2)
+      {
+        a2[(uint)(bn % NINDIRECT)] = addr2;
+        log_write(bp2);
+      }
+    }
+    brelse(bp2);
+    return addr2;
   }
 
   panic("bmap: out of range");
@@ -452,31 +605,70 @@ itrunc(struct inode *ip)
   struct buf *bp;
   uint *a;
 
+  //NOTE - Start with direct blocks
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
+      //NOTE - 0 means empty - future balloc() will allocate
+      //LINK - kernel/fs.c#balloc_ex_1
+      //LINK - kernel/fs.c#balloc_ex_2
       ip->addrs[i] = 0;
     }
   }
 
+  //NOTE - Single indirect blocks
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
     for(j = 0; j < NINDIRECT; j++){
+      //TODO: Why not set a[j]=0?
       if(a[j])
         bfree(ip->dev, a[j]);
     }
     brelse(bp);
+    //NOTE - The indirect block itself
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
 
+  //Double indirect blocks
+  if(ip->addrs[NDIRECT+1])
+  {
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    //a[j] is indirect, don't bfree until the second layer is done
+    for(j = 0; j < NINDIRECT; j++)
+    {
+      if(a[j])
+      {
+        //Recall the 2nd argument of bread() is blockno
+        struct buf *bp2 = bread(ip->dev, a[j]);
+        uint *a2 = (uint*)bp2->data;
+        for(int k = 0; k < NINDIRECT; k++)
+        {
+          //Free layer-2 direct blocks, 256 for each layer-1 block
+          if(a2[k])
+            bfree(ip->dev, a2[k]);
+        }
+        brelse(bp2);
+        //Free layer-1 indirect blocks
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
+  }
+
   ip->size = 0;
   iupdate(ip);
+
+  //NOTE - caller should call releasesleep(&ip->lock) to release ip->lock
 }
 
 // Copy stat information from inode.
 // Caller must hold ip->lock.
+//NOTE - Used by the stat syscall
 void
 stati(struct inode *ip, struct stat *st)
 {
@@ -491,22 +683,37 @@ stati(struct inode *ip, struct stat *st)
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
+//NOTE - Copy n bytes, starting from offset off, from ip, to VA user_dst
+//We have two error code: 0 and -1
 int
 readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 {
   uint tot, m;
   struct buf *bp;
 
+  //NOTE - If we want to read beyond the end of the file (off > ip->size),
+  //or if we want to read negative number of bytes (off + n < off),
+  //return an error (0 bytes read)
   if(off > ip->size || off + n < off)
     return 0;
+  //NOTE - if part of the address we want to read lies beyond the end of the file,
+  // it truncates it to make sure the read doesn't cross the end of the file.
   if(off + n > ip->size)
     n = ip->size - off;
 
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
+    //NOTE - Get the block number
     uint addr = bmap(ip, off/BSIZE);
     if(addr == 0)
       break;
+    //NOTE - Use the block number to fetch a pointer to the buffer
     bp = bread(ip->dev, addr);
+    /*NOTE - What is the maximum number of bytes readi() reads/copies out each loop?
+      BSIZE = 1024, tot = 0 for first loop
+      Let's say we have a file of 4,096 bytes, and want to read 4,096 bytes from offset 0.
+      First loop: n - tot = 4,096, BSIZE - off%BSIZE = 1,024, so m = 1,024 bytes
+      Apparently, BSIZE - off%BSIZE is capped at BSIZE, so m is capped at BSIZE bytes
+    */
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
       brelse(bp);
@@ -531,25 +738,34 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
   uint tot, m;
   struct buf *bp;
 
+  //NOTE - If we want to start the write beyond the end of file (off > ip->size),
+  //or want to write negative number of bytes (off + n < off),
+  //return -1 (why not 0? probably because we can write 0 bytes)
   if(off > ip->size || off + n < off)
     return -1;
+  //NOTE - Cannot write pass maximum file size
   if(off + n > MAXFILE*BSIZE)
     return -1;
 
   for(tot=0; tot<n; tot+=m, off+=m, src+=m){
+    //NOTE - Get the block number
     uint addr = bmap(ip, off/BSIZE);
     if(addr == 0)
       break;
+    //NOTE - Use the block number to fetch a pointer to the buffer
     bp = bread(ip->dev, addr);
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyin(bp->data + (off % BSIZE), user_src, src, m) == -1) {
       brelse(bp);
       break;
     }
+    //NOTE - log_write() doesn't write into disk. It just bpin() bp.
     log_write(bp);
+    //NOTE - No longer needs the buffer??
     brelse(bp);
   }
 
+  //NOTE - Extend the file size if needed (off is INCREMENTED in the for loop)
   if(off > ip->size)
     ip->size = off;
 
@@ -571,15 +787,31 @@ namecmp(const char *s, const char *t)
 
 // Look for a directory entry in a directory.
 // If found, set *poff to byte offset of entry.
+//NOTE SOME callers of dirlookup() lock dp first, not sure if it's every caller, though.
+//LINK - kernel/fs.c#lock_dp_1
+/*TODO - Figure out this part of the text:
+  (why dirlookup() returns dp unlocked)
+  The caller has locked dp, so if the lookup was for ., an alias for the current directory, 
+  attempting to lock the inode before returning would try to re-lock dp and deadlock.
+
+  But I don't get what's so special with .? The deadlock would happen to everything, no?
+*/
+//NOTE - I have tracked this function by bp @ sys_open().
+//So dirlookup() goes through every item in the directory, starting from . and ..
+//For each item, it uses namecmp() to match the names
 struct inode*
 dirlookup(struct inode *dp, char *name, uint *poff)
 {
   uint off, inum;
   struct dirent de;
 
+  //NOTE - directories are implemented like a file. Its inode has type = T_DIR.
+  //Its data is a sequence of directory entries
+  //TODO - Where is the definition of a sample directory object?
   if(dp->type != T_DIR)
     panic("dirlookup not DIR");
 
+  //NOTE - directories are like files, so we can use readi() to read into a struct dirent
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup read");
@@ -587,6 +819,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
       continue;
     if(namecmp(name, de.name) == 0){
       // entry matches path element
+      //NOTE - Save byte offset of the entry in case caller wants to edit
       if(poff)
         *poff = off;
       inum = de.inum;
@@ -599,6 +832,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
 
 // Write a new directory entry (name, inum) into the directory dp.
 // Returns 0 on success, -1 on failure (e.g. out of disk blocks).
+//TODO - Figure out where does inum come from. Does the caller increment it?
 int
 dirlink(struct inode *dp, char *name, uint inum)
 {
@@ -608,11 +842,14 @@ dirlink(struct inode *dp, char *name, uint inum)
 
   // Check that name is not present.
   if((ip = dirlookup(dp, name, 0)) != 0){
+    //NOTE - dirlookup() calls iget() which increases ref, so call iput() to decrement ref
     iput(ip);
     return -1;
   }
 
   // Look for an empty dirent.
+  //NOTE - Each "directory" block contains BSIZE/sizeof(de) of struct dirent
+  //in its data field
   for(off = 0; off < dp->size; off += sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlink read");
@@ -622,6 +859,7 @@ dirlink(struct inode *dp, char *name, uint inum)
 
   strncpy(de.name, name, DIRSIZ);
   de.inum = inum;
+  //NOTE - Write back to the directory inode
   if(writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
     return -1;
 
@@ -676,29 +914,53 @@ namex(char *path, int nameiparent, char *name)
 {
   struct inode *ip, *next;
 
+  /*NOTE - Look at the first character of path:
+  1. path starts with '/', which means it's a root path (e.g. /dev/null in Linux)
+  2. path doesn't start with '/', get the current working directory
+  //TODO - I don't know, what about other paths, e.g. path starts with .. ?
+  */
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
   else
     ip = idup(myproc()->cwd);
 
+  //NOTE - skipelem() copies the next path element from path into name
+  //e.g. skipelem("///a//bb", name) = "bb", setting name = "a"
+  //e.g. skipelem("a", name) = "", setting name = "a"
   while((path = skipelem(path, name)) != 0){
+    //ANCHOR[id=lock_dp_1]
     ilock(ip);
+    //NOTE - Must be wrong if it's not a directory inode
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;
     }
+    //NOTE - If want parent dir AND we exhausted all / chars in path (see second e.g. ^)
     if(nameiparent && *path == '\0'){
       // Stop one level early.
       iunlock(ip);
       return ip;
     }
+    //TODO - If path = "./testdir1", in the first loop, 
+    //path is now "testdir1" and name is now "."
+    //why does it assume that there is always a name? 
+    //I need to debug more to find out
     if((next = dirlookup(ip, name, 0)) == 0){
       iunlockput(ip);
       return 0;
     }
     iunlockput(ip);
+    //NOTE - next is now the directory entry matching `name` in `ip`
+    //Prepare for next while iteration
+    //NOTE - Prevent deadlock: If we are looking up . , 
+    // that means the original ip locked by ilock(ip) ^ is the same as next,
+    // to prevent deadlock, we use iunlockput(ip) to release the lock
     ip = next;
   }
+  /*TODO - Whence we reach this point, it means:
+    - The original ip is indeed a directory (no error return)
+    - ???
+  */
   if(nameiparent){
     iput(ip);
     return 0;

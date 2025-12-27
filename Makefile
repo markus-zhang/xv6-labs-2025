@@ -195,6 +195,10 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_touch\
+	$U/_find\
+	$U/_namei\
+	$U/_symlink\
 
 
 

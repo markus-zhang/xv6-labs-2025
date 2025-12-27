@@ -42,3 +42,8 @@ entry("getpid");
 entry("sbrk");
 entry("pause");
 entry("uptime");
+entry("touch");
+entry("find");
+entry("namei");
+entry("symlink");
+entry("symlinktarget");

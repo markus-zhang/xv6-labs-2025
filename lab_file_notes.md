@@ -519,4 +519,37 @@ cat boo
 ```
 Both `cat` work perfectly. `ls` shows `boo` is linking to `foo`, which is not exactly correct, but it does follows Linux. In Linux, symbolic links ONLY show the targeted filename. It doesn't bother to go looking for the REAL targeted filename.
 
-Next function to fix is `sys_chdir`. I can create a symbolic link for directories, but I cannot `cd` into it. I know it is ot part of the request, but I'd like to implement it.
+Next function to fix is `sys_chdir`. I can create a symbolic link for directories, but I cannot `cd` into it. I know it is not part of the request, but I'd like to implement it.
+
+It's pretty simple, the only change I need to make is the `T_SLINK` branch:
+
+```C
+  if(ip->type != T_DIR)
+  {
+    //Symbolic link code
+    if(ip->type == T_SLINK)
+    {
+      //ip already locked
+      while(ip->type == T_SLINK)
+      {
+        char target[DIRSIZ] = {0};
+        readi(ip, 0, (uint64)target, 0, ip->size);
+        //We need to switch ip so unlock the current ip first
+        iunlock(ip);
+        if((ip = namei(target)) == 0)
+        {
+          end_op();
+          return -1;
+        }
+        //Lock the new ip, for next loop, or for iunlock(ip) after while()
+        ilock(ip);
+      }
+    }
+    else
+    {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+```

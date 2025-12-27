@@ -548,7 +548,7 @@ fail:
 //Syscall for ls.c to figure out the target filename
 //I cannot use read() in ls.c as it reads the content of the target file,
 //not just the filename
-//sys_symlinktarget() should mimic fileread() but just for symlink
+//sys_symlinktarget() writes the target filename into address p.
 //p should be user land address (e.g. a char array)
 uint64
 sys_symlinktarget(void)
@@ -879,15 +879,39 @@ sys_chdir(void)
   struct proc *p = myproc();
   
   begin_op();
-  if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
+  if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0)
+  {
     end_op();
     return -1;
   }
   ilock(ip);
-  if(ip->type != T_DIR){
-    iunlockput(ip);
-    end_op();
-    return -1;
+  if(ip->type != T_DIR)
+  {
+    //Symbolic link code
+    if(ip->type == T_SLINK)
+    {
+      //ip already locked
+      while(ip->type == T_SLINK)
+      {
+        char target[DIRSIZ] = {0};
+        readi(ip, 0, (uint64)target, 0, ip->size);
+        //We need to switch ip so unlock the current ip first
+        iunlock(ip);
+        if((ip = namei(target)) == 0)
+        {
+          end_op();
+          return -1;
+        }
+        //Lock the new ip, for next loop, or for iunlock(ip) after while()
+        ilock(ip);
+      }
+    }
+    else
+    {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
   }
   iunlock(ip);
   iput(p->cwd);

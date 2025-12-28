@@ -503,3 +503,85 @@ sys_pipe(void)
   }
   return 0;
 }
+
+//mmap: replace mappages() for memory mapped files
+//Record fd, starting VA and length to a struct in the proc
+//Sample call: 
+//char *p = mmap(0, PGSIZE*2, PROT_READ, MAP_PRIVATE, fd, 0);
+char*
+sys_mmap(void)
+{
+  void *addr = 0;
+  int len;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
+
+  //Step 1: Read cli arguments
+  argaddr(0, addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argint(5, &offset);
+
+  printf("sys_mmap: addr is %p\n", addr);
+  printf("sys_mmap: len is %d\n", len);
+  printf("sys_mmap: prot is %d\n", prot);
+  printf("sys_mmap: flags is %d\n", flags);
+  printf("sys_mmap: fd is %d\n", fd);
+  printf("sys_mmap: offset is %d\n", offset);
+
+  //Step 2: Lazy allocate len/PGSIZE pages for mmap
+  struct proc *p = myproc();
+  printf("sys_mmap: max proc va is: %ld\n", p->sz);
+  //NOTE: No need to allocate physical memory, so comment below out
+  // uint64 oldsz = PGROUNDUP(p->sz);
+  // uint64 newsz = oldsz + 10 * PGSIZE;
+  // char *mem;
+  // for (uint64 a = oldsz; a < newsz; a += PGSIZE)
+  // {
+  //   mem = kalloc();
+  //   if(mem == 0)
+  //   {
+  //     kfree(mem);
+  //     uvmdealloc(p->pagetable, a, oldsz);
+  //     return -1;
+  //   }
+  // }
+  uint64 oldsz = p->sz;
+  p->sz += len;
+
+  //Step 3: Mark in a special place in proc
+  struct filemap fmap;
+  fmap.fd = fd;
+  fmap.addr.startua = oldsz;
+  fmap.addr.npage = len / PGSIZE;
+  fmap.addr.prot = prot;
+  fmap.addr.flags = flags;
+
+  //p->fmap = fmap;
+  printf("blah: %d\n", fmap.fd);
+
+  //We increased p->sz but did not allocate/mappage,
+  //so next time the program tries to access these pages,
+  //it should tirgger vmfault()
+  //I'll modify vmfault() to call mmapfault() first
+  return (char*)addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  void *addr = 0;
+  int len;
+
+  //Step 1: Read cli arguments
+  argaddr(0, addr);
+  argint(1, &len);
+
+  printf("sys_munmap: release %d bytes at addr %p\n", len, addr);
+
+  return 0;
+}

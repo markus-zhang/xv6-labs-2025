@@ -81,6 +81,29 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+//mmap:
+//We probably don't need fd as it is closed after mmap
+//We need the path so that same file goes into same fdmap
+//TODO: What happens if the file content changes? Need to remap?
+struct filemapaddr
+{
+  uint64 startua;
+  int npage;
+  int prot;
+  int flags;
+};
+
+struct filemap
+{
+  //I don't think this works, but just for testing
+  //Reason it won't work: what happens if fd is closed? Right?
+  //What if the same file is opened multiple times with different fd?
+  int fd;
+  //Let's say 16 entries for one file should be good enough?
+  //Right now just one entry for testing
+  struct filemapaddr addr;
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -104,4 +127,7 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  //mmap
+  //struct filemap fmap;
 };

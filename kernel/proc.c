@@ -55,6 +55,13 @@ procinit(void)
       initlock(&p->lock, "proc");
       p->state = UNUSED;
       p->kstack = KSTACK((int) (p - proc));
+
+      //mmap
+      // p->fmap.fd = 0;
+      // p->fmap.addr.startua = 0;
+      // p->fmap.addr.npage = 0;
+      // p->fmap.addr.prot = 0;
+      // p->fmap.addr.flags = 0;
   }
 }
 

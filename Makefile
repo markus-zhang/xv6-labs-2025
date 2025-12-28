@@ -196,7 +196,6 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 	$U/_uvm\
-	$U/_mmaptest\
 
 
 

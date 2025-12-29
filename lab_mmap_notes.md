@@ -42,3 +42,23 @@ OK I'm not sure where to find the VAs for mmap files. Right now the idea is to j
 I don't exactly know how the mmap region should behave once the `fd` is closed. It should still work, though, so I need a way to track pathname, not just the `fd`.
 
 Imagine multiple `mmap()` for the same file. How should `mmap()` behave? 
+
+### Trial 1
+
+OK I managed to pass the basic test. However, I don't know how to get a `sturct file *` after the `fd` is closed, as in the second check.
+
+```C
+  // should be able to map file opened read-only with private writable
+  // mapping
+  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  if (p == MAP_FAILED)
+    err("mmap (2)");
+  if (close(fd) == -1)
+    err("close (1)");
+  _v1(p);
+  for (i = 0; i < PGSIZE*2; i++)
+    p[i] = 'Z';
+  if (munmap(p, PGSIZE*2) == -1)
+    err("munmap (2)");
+  close(fd);
+```

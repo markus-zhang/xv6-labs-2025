@@ -17,6 +17,8 @@
 #include "fcntl.h"
 #include "debug.h"
 
+static uint64 is_mmap(uint64 va);
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -553,6 +555,7 @@ sys_mmap(void)
   // }
   uint64 oldsz = p->sz;
   p->sz += len;
+  DPRINTF("sys_mmap: oldsz %p - newsz %p\n", (void *)oldsz, (void *)(p->sz));
 
   //Step 3: Mark in a special place in proc
   struct filemap fmap;
@@ -571,20 +574,71 @@ sys_mmap(void)
   //I'll modify vmfault() to call mmapfault() first
 
   //mmap starts from oldsz, remember?
+  DPRINTF("sys_mmap: done, return %p\n", (void *)oldsz);
   return (char*)oldsz;
 }
 
 uint64
 sys_munmap(void)
 {
-  void *addr = 0;
+  uint64 addr = 0;
   int len;
+  int writeback = 0;
 
   //Step 1: Read cli arguments
-  argaddr(0, addr);
+  argaddr(0, &addr);
   argint(1, &len);
 
-  printf("sys_munmap: release %d bytes at addr %p\n", len, addr);
+  if (len % PGSIZE)
+  {
+    DPRINTF("sys_munmap: len not aligned to PGSIZE\n");
+    return -1;
+  }
+
+  //Step 2: Check whether it is in p->fm
+  //Check whether we need to write back (flags is MAP_SHARED)
+  if (!is_mmap(addr))
+  {
+    DPRINTF("sys_munmap: addr not in mmap region\n");
+    return -1;
+  }
+
+  struct proc *p = myproc();
+  if ((p->fmap.addr.prot | PROT_WRITE) && (p->fmap.addr.flags | MAP_SHARED))
+    writeback = 1;
+
+  //Step 3: Unmap
+  //Assume there is no writeback, for simplicity
+  uint64 baseaddr = PGROUNDDOWN(addr);
+  uint64 npages = len / PGSIZE;
+  if (writeback)
+    printf("sys_munmap: dummy write back...\n");
+
+  uvmunmap(myproc()->pagetable, baseaddr, npages, 1);
+
+  //Step 4: reduce proc sz
+  p->sz -= len;
+
+
+  printf("sys_munmap: release %d bytes at addr %p\n", len, (void *)addr);
 
   return 0;
 }
+
+//Check whether user land addr va is in the proc's mmap region
+static uint64
+is_mmap(uint64 va)
+{
+  struct proc *p = myproc();
+  uint64 startua = p->fmap.addr.startua;
+  uint64 endua = p->fmap.addr.startua + p->fmap.addr.npage * PGSIZE;
+  return (va >= startua && va < endua);
+}
+
+// static void
+// clear_fmap(struct proc *p)
+// {
+//   ASSERT(p != 0);
+
+
+// }

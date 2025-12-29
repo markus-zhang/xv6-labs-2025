@@ -7,6 +7,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "debug.h"
 
 /*
  * the kernel's page table.
@@ -456,7 +457,9 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   struct proc *p = myproc();
 
   //mmap: check if va is part of mmap addr
-  if (va >= p->fmap.addr.startua && va < p->fmap.addr.startua + p->fmap.addr.npage * PGSIZE)
+  uint64 startua = p->fmap.addr.startua;
+  uint64 endua = p->fmap.addr.startua + p->fmap.addr.npage * PGSIZE;
+  if (va >= startua && va < endua)
   {
     return mmapfault(pagetable, va, read);
   }
@@ -484,6 +487,40 @@ uint64
 mmapfault(pagetable_t pagetable, uint64 va, int read)
 {
   //For read fault, should load file into va
+  //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
+  //va = 0x5400, then the page starts from 0x5000 to 0x6000
+  DPRINTF("mmapfault: begin for va %p\n", (void *)va);
+  uint64 baseva = PGROUNDDOWN(va);
+  struct proc *p = myproc();
+  //TODO: Figure out how to do this after fd is closed
+  //Otherwise f is 0, meh.
+  struct file *f = p->ofile[p->fmap.fd];
+
+  //In this stage, assume that the fd is still open
+  //But need to change the code later for closed fd
+  //Only read one page
+  // int bytesread = fileread(f, va, PGSIZE);
+  // printf("mmapfault: read %d bytes\n", bytesread);
+  uint64 mem = (uint64)kalloc();
+  if (mem == 0)
+    return 0;
+  memset((void *)mem, 0, PGSIZE);
+  //I think we have to enable PTE_W even for readonly mmap regions
+  //becuase we need to write into it for mmap.
+  //RO/RW should be implemented by looking at p->fmap.addr.prot
+  if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
+  {
+    kfree((void *)mem);
+    return 0;
+  }
+  //TODO: How do we determine the number of bytes to copy?
+  //Is it OK to copy a whole PAGE anyway?
+  int bytesread = fileread(f, baseva, PGSIZE);
+  if (bytesread < 0)
+    panic("mmapfault: fileread failed!");
+
+  printf("mmapfault: read %d bytes\n", bytesread);
+  return mem;
 }
 
 int

@@ -455,6 +455,12 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   uint64 mem;
   struct proc *p = myproc();
 
+  //mmap: check if va is part of mmap addr
+  if (va >= p->fmap.addr.startua && va < p->fmap.addr.startua + p->fmap.addr.npage * PGSIZE)
+  {
+    return mmapfault(pagetable, va, read);
+  }
+
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
@@ -470,6 +476,14 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     return 0;
   }
   return mem;
+}
+
+//Stage 1 - Assume every fault is a read fault
+//va is user land va
+uint64
+mmapfault(pagetable_t pagetable, uint64 va, int read)
+{
+  //For read fault, should load file into va
 }
 
 int

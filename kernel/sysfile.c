@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "debug.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -511,7 +512,7 @@ sys_pipe(void)
 char*
 sys_mmap(void)
 {
-  void *addr = 0;
+  // void *addr = 0;
   int len;
   int prot;
   int flags;
@@ -519,23 +520,23 @@ sys_mmap(void)
   int offset;
 
   //Step 1: Read cli arguments
-  argaddr(0, addr);
+  //argaddr(0, addr);
   argint(1, &len);
   argint(2, &prot);
   argint(3, &flags);
   argint(4, &fd);
   argint(5, &offset);
 
-  printf("sys_mmap: addr is %p\n", addr);
-  printf("sys_mmap: len is %d\n", len);
-  printf("sys_mmap: prot is %d\n", prot);
-  printf("sys_mmap: flags is %d\n", flags);
-  printf("sys_mmap: fd is %d\n", fd);
-  printf("sys_mmap: offset is %d\n", offset);
+  // DPRINTF("sys_mmap: addr is %p\n", addr);
+  DPRINTF("sys_mmap: len is %d\n", len);
+  DPRINTF("sys_mmap: prot is %d\n", prot);
+  DPRINTF("sys_mmap: flags is %d\n", flags);
+  DPRINTF("sys_mmap: fd is %d\n", fd);
+  DPRINTF("sys_mmap: offset is %d\n", offset);
 
   //Step 2: Lazy allocate len/PGSIZE pages for mmap
   struct proc *p = myproc();
-  printf("sys_mmap: max proc va is: %ld\n", p->sz);
+  DPRINTF("sys_mmap: max proc va is: %ld\n", p->sz);
   //NOTE: No need to allocate physical memory, so comment below out
   // uint64 oldsz = PGROUNDUP(p->sz);
   // uint64 newsz = oldsz + 10 * PGSIZE;
@@ -561,14 +562,16 @@ sys_mmap(void)
   fmap.addr.prot = prot;
   fmap.addr.flags = flags;
 
-  //p->fmap = fmap;
-  printf("blah: %d\n", fmap.fd);
+  p->fmap = fmap;
+  //printf("blah: %d\n", fmap.fd);
 
   //We increased p->sz but did not allocate/mappage,
   //so next time the program tries to access these pages,
   //it should tirgger vmfault()
   //I'll modify vmfault() to call mmapfault() first
-  return (char*)addr;
+
+  //mmap starts from oldsz, remember?
+  return (char*)oldsz;
 }
 
 uint64

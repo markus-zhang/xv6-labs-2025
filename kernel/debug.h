@@ -6,7 +6,7 @@
 #endif
 
 #ifndef DEBUG_PRINT
-#define DEBUG_PRINT 1
+#define DEBUG_PRINT 0
 #endif
 
 #define ASSERT(cond)                                                        \

@@ -129,5 +129,5 @@ struct proc {
   char name[16];               // Process name (debugging)
 
   //mmap
-  //struct filemap fmap;
+  struct filemap fmap;
 };

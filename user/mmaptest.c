@@ -125,6 +125,8 @@ mmap_test(void)
     err("mmap (2)");
   if (close(fd) == -1)
     err("close (1)");
+  //ANCHOR[id=fileoff_issue]
+  //_v1() 
   _v1(p);
   for (i = 0; i < PGSIZE*2; i++)
     p[i] = 'Z';

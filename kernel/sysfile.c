@@ -105,8 +105,16 @@ sys_close(void)
 
   if(argfd(0, &fd, &f) < 0)
     return -1;
-  myproc()->ofile[fd] = 0;
   fileclose(f);
+  if(f->ref == 0)
+    myproc()->ofile[fd] = 0;
+  //NOTE: mmap issue
+  //I noticed that everytime `fileread()` is called, f->off is moved,
+  //and as long as it's the same f, f->off retains the change.
+  //This breaks `mmapfault()` for the second test in mmaptest.c.
+  //LINK - user/mmaptest.c#fileoff_issue
+  //Reset f->off if we intend to close it, even if we don't due to f->ref
+  f->off = 0;
   return 0;
 }
 
@@ -564,9 +572,13 @@ sys_mmap(void)
   fmap.addr.npage = len / PGSIZE;
   fmap.addr.prot = prot;
   fmap.addr.flags = flags;
+  //TODO: Need to find the file path in case fd is closed later
 
   p->fmap = fmap;
-  //printf("blah: %d\n", fmap.fd);
+  //Increment file ref so that fileclose() keeps the file open, I think
+  struct file *f = p->ofile[fd];
+  f->ref += 1;
+  DPRINTF("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)f, f->ref);
 
   //We increased p->sz but did not allocate/mappage,
   //so next time the program tries to access these pages,
@@ -574,7 +586,7 @@ sys_mmap(void)
   //I'll modify vmfault() to call mmapfault() first
 
   //mmap starts from oldsz, remember?
-  DPRINTF("sys_mmap: done, return %p\n", (void *)oldsz);
+  printf("sys_mmap: done, return %p\n", (void *)oldsz);
   return (char*)oldsz;
 }
 
@@ -618,6 +630,12 @@ sys_munmap(void)
 
   //Step 4: reduce proc sz
   p->sz -= len;
+
+  //Step 5: decrement file ref so that fileclose() closes the file
+  int fd = p->fmap.fd;
+  struct file *f = p->ofile[fd];
+  f->ref -= 1;
+  DPRINTF("sys_munmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)f, f->ref);
 
 
   printf("sys_munmap: release %d bytes at addr %p\n", len, (void *)addr);

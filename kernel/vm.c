@@ -495,6 +495,9 @@ mmapfault(pagetable_t pagetable, uint64 va, int read)
   //TODO: Figure out how to do this after fd is closed
   //Otherwise f is 0, meh.
   struct file *f = p->ofile[p->fmap.fd];
+  DPRINTF("mmapfault: ref of fd %d file %lx\n", p->fmap.fd, (uint64)f);
+  // if (!f)
+  //   printf("mmapfault: file is NULL\n"); 
 
   //In this stage, assume that the fd is still open
   //But need to change the code later for closed fd
@@ -513,8 +516,7 @@ mmapfault(pagetable_t pagetable, uint64 va, int read)
     kfree((void *)mem);
     return 0;
   }
-  //TODO: How do we determine the number of bytes to copy?
-  //Is it OK to copy a whole PAGE anyway?
+  //FIXME: This prints "read 0 bytes", why?
   int bytesread = fileread(f, baseva, PGSIZE);
   if (bytesread < 0)
     panic("mmapfault: fileread failed!");

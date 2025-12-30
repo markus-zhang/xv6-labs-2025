@@ -62,3 +62,30 @@ OK I managed to pass the basic test. However, I don't know how to get a `sturct 
     err("munmap (2)");
   close(fd);
 ```
+
+Hmmm, I think incrementing `f->ref` in `mmap` and decrementing `f->ref` in `munmap` could fix the problem, but apparently not. I then found out that `sys_close()` closes the file regardless of `f->ref`, so I modified the code a bit.
+
+I got a new problem. I dug in a bit more, and found out that `fileread()` returns 0 bytes read in `mmapfault()`, which is strange. Debugging further, I found that `f->off` retains the previous value. Looks like everytime `fileread()` is called, it moves `f->off` and as long as it is the same `f` it retains the same value. I think this could be the problem.
+
+After a bit of tracing, this is definitely the issue. The function call is:
+`readi (ip=0x800167c0 <itable+296>, user_dst=user_dst@entry=1, dst=dst@entry=24576, off=6144, n=n@entry=4096)`
+
+So `off` is 0x1800, and `ip->size` is 0x1800. So eventually `n` is 0, which means 0 bytes read.
+
+```C
+  //In readi()
+  if(off > ip->size || off + n < off)
+    return 0;
+  if(off + n > ip->size)
+    n = ip->size - off;
+```
+
+Here is the proposed solution: every time `close()` is called, even if it does not really close the file due to `f->ref > 0`, it should still reset `f->ref`, because trying to close the file means that the program doesn't want to track `f->ref` anymore and would like to start from the beginning next time. Wow, I actually knew nothing about the offset until now. There is a lot of nitty-gratty details in the FS.
+
+OK now I have a new error: fileclose() panics. I didn't dig deep into this, but looking at the code, looks like every `fileclose()` call reduces `f->ref`, and every `munmap()` reduces `f->ref` too. I think I should create a new variable in `f`, because I'm mixing two reference counts. At least it is cleaner?
+
+I also want to redo the work, because right now I'm simply incrementing `p->sz`. But this leaves a lot of issues. For example, what if say 0x3000 to 0x5000 is mmap region, 0x5000 to 0x6000 is something else, and then we want to munmap the mmap region? **This will leave holes in `p->sz`** and I'm not sure what could be the impact.
+
+TODO list:
+[] Map mmap region to a separate VA region
+[] Create a new mmap reference for `f`. Actually, the hints says we can reuse `f->ref`, as in `filedup()`, so maybe I should look into whether my code misses a reference count change

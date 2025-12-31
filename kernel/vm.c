@@ -457,12 +457,9 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   struct proc *p = myproc();
 
   //mmap: check if va is part of mmap addr
-  uint64 startua = p->fmap.addr.startua;
-  uint64 endua = p->fmap.addr.startua + p->fmap.addr.npage * PGSIZE;
-  if (va >= startua && va < endua)
-  {
-    return mmapfault(pagetable, va, read);
-  }
+  int index = findmmapwithin(p, va);
+  if (index >= 0)
+    return mmapfault(pagetable, va, index, read);
 
   if (va >= p->sz)
     return 0;
@@ -481,27 +478,59 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   return mem;
 }
 
+//Grab the index of the element of p->fmap array whose startva MATCHES addr
+int 
+findmmapbase(struct proc * p, uint64 startua)
+{
+  int i = 0;
+  for (; i < MAXMMAP; i++)
+  {
+    if (startua == p->fmap[i].startua)
+      return i;
+  }
+  return -1;
+}
+
+//Grab the index of the element of p->fmap array that CONTAINS addr
+int 
+findmmapwithin(struct proc * p, uint64 addr)
+{
+  int i = 0;
+  for (; i < MAXMMAP; i++)
+  {
+    uint64 startua = p->fmap[i].startua;
+    uint64 endua = p->fmap[i].startua + p->fmap[i].len;
+    if ((addr >= startua) && (addr < endua))
+      return i;
+  }
+  return -1;
+}
+
 //Stage 1 - Assume every fault is a read fault
 //va is user land va
 uint64
-mmapfault(pagetable_t pagetable, uint64 va, int read)
+mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
 {
+  ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
+  ASSERT(pagetable != 0);
+  //mmap region always lower than TRAMPOLINE
+  ASSERT(va < TRAMPOLINE);
+  //technically a boolean
+  ASSERT((read == 0) || (read == 1));
+
+  DPRINTF("mmapfault: begin for va %p\n", (void *)va);
   //For read fault, should load file into va
   //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
   //va = 0x5400, then the page starts from 0x5000 to 0x6000
-  DPRINTF("mmapfault: begin for va %p\n", (void *)va);
   uint64 baseva = PGROUNDDOWN(va);
   struct proc *p = myproc();
-  //TODO: Figure out how to do this after fd is closed
-  //Otherwise f is 0, meh.
-  struct file *f = p->ofile[p->fmap.fd];
-  DPRINTF("mmapfault: ref of fd %d file %lx\n", p->fmap.fd, (uint64)f);
-  // if (!f)
-  //   printf("mmapfault: file is NULL\n"); 
 
-  //In this stage, assume that the fd is still open
-  //But need to change the code later for closed fd
-  //Only read one page
+  struct file *f = p->fmap[fmapidx].f;
+  DPRINTF("mmapfault: ref of file %lx\n", (uint64)f);
+  if (!f)
+    panic("mmapfault: file is NULL");
+
+  //TODO: Check f->ref works for mmap and munmap
   // int bytesread = fileread(f, va, PGSIZE);
   // printf("mmapfault: read %d bytes\n", bytesread);
   uint64 mem = (uint64)kalloc();
@@ -516,9 +545,9 @@ mmapfault(pagetable_t pagetable, uint64 va, int read)
     kfree((void *)mem);
     return 0;
   }
-  //FIXME: This prints "read 0 bytes", why?
+
   int bytesread = fileread(f, baseva, PGSIZE);
-  if (bytesread < 0)
+  if (bytesread <= 0)
     panic("mmapfault: fileread failed!");
 
   printf("mmapfault: read %d bytes\n", bytesread);

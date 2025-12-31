@@ -16,8 +16,10 @@
 #include "file.h"
 #include "fcntl.h"
 #include "debug.h"
+#include "memlayout.h"
 
-static uint64 is_mmap(uint64 va);
+//static uint64 is_mmap(uint64 va);
+static int ffmmap(struct proc * p);
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -547,47 +549,62 @@ sys_mmap(void)
   //Step 2: Lazy allocate len/PGSIZE pages for mmap
   struct proc *p = myproc();
   DPRINTF("sys_mmap: max proc va is: %ld\n", p->sz);
-  //NOTE: No need to allocate physical memory, so comment below out
-  // uint64 oldsz = PGROUNDUP(p->sz);
-  // uint64 newsz = oldsz + 10 * PGSIZE;
-  // char *mem;
-  // for (uint64 a = oldsz; a < newsz; a += PGSIZE)
-  // {
-  //   mem = kalloc();
-  //   if(mem == 0)
-  //   {
-  //     kfree(mem);
-  //     uvmdealloc(p->pagetable, a, oldsz);
-  //     return -1;
-  //   }
-  // }
-  uint64 oldsz = p->sz;
-  p->sz += len;
-  DPRINTF("sys_mmap: oldsz %p - newsz %p\n", (void *)oldsz, (void *)(p->sz));
-
-  //Step 3: Mark in a special place in proc
-  struct filemap fmap;
-  fmap.fd = fd;
-  fmap.addr.startua = oldsz;
-  fmap.addr.npage = len / PGSIZE;
-  fmap.addr.prot = prot;
-  fmap.addr.flags = flags;
-  //TODO: Need to find the file path in case fd is closed later
-
-  p->fmap = fmap;
-  //Increment file ref so that fileclose() keeps the file open, I think
   struct file *f = p->ofile[fd];
-  f->ref += 1;
-  DPRINTF("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)f, f->ref);
+  if (!f)
+    panic("sys_mmap: fd already closed");
 
-  //We increased p->sz but did not allocate/mappage,
+  //No R/W mapping for a file opened RO
+  //Kinda complicated, I created the logic from reading mmaptest.c
+  //I don't quite understand it TBH
+  if ((prot & PROT_WRITE) && (f->writable == 0) && (flags & MAP_SHARED))
+    return (char *) -1;
+
+  //Do not touch p->sz, leave it to regular memory allocation/deallocation
+  //uint64 oldsz = p->sz;
+  //p->sz += len;
+  //DPRINTF("sys_mmap: oldsz %p - newsz %p\n", (void *)oldsz, (void *)(p->sz));
+
+  //Check if fmap is full
+  if (p->totalvma == MAXMMAP)
+    return 0;
+
+  int lastfreevma = ffmmap(p);
+  //Step 3: Mark in a special place in proc
+  struct vma fm;
+  //NOTE: Each mmap region takes 1 GiB
+  //The first starts from MMAPSTART, the second from MMAPSTART + 1 GiB, etc.
+  fm.startua = MMAPSTART + lastfreevma * GiB;
+  fm.len = len;
+  fm.prot = prot;
+  fm.flags = flags;
+  //NOTE: It's very difficult to find pathname from f or fd
+  fm.f = f;
+
+  p->fmap[lastfreevma] = fm;
+  //Increment file ref so that fileclose() keeps the file open, I think
+  fm.f->ref += 1;
+  printf("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)fm.f, fm.f->ref);
+
+  //We did not allocate/mappage,
   //so next time the program tries to access these pages,
-  //it should tirgger vmfault()
-  //I'll modify vmfault() to call mmapfault() first
+  //it should tirgger vmfault(),which calls mmapfault() first
 
-  //mmap starts from oldsz, remember?
-  printf("sys_mmap: done, return %p\n", (void *)oldsz);
-  return (char*)oldsz;
+  //mmap starts from a specifc region ourside of "ordinary" memory allocation
+  printf("sys_mmap: done, mmap region starts from %p\n", (void *)fm.startua);
+  return (char*)fm.startua;
+}
+
+//Grab the index of first free element of p->fmap array
+static int 
+ffmmap(struct proc * p)
+{
+  int i = 0;
+  for (; i < MAXMMAP; i++)
+  {
+    if (!(p->fmap[i].f))
+      return i;
+  }
+  return -1;
 }
 
 uint64
@@ -600,6 +617,7 @@ sys_munmap(void)
   //Step 1: Read cli arguments
   argaddr(0, &addr);
   argint(1, &len);
+  uint64 baseaddr = PGROUNDDOWN(addr);
 
   if (len % PGSIZE)
   {
@@ -607,56 +625,42 @@ sys_munmap(void)
     return -1;
   }
 
-  //Step 2: Check whether it is in p->fm
-  //Check whether we need to write back (flags is MAP_SHARED)
-  if (!is_mmap(addr))
-  {
-    DPRINTF("sys_munmap: addr not in mmap region\n");
-    return -1;
-  }
-
+  //Step 2: Check which mmap region addr belongs to
   struct proc *p = myproc();
-  if ((p->fmap.addr.prot | PROT_WRITE) && (p->fmap.addr.flags | MAP_SHARED))
+  int index = findmmapbase(p, baseaddr);
+  if (index == -1)
+    panic("sys:munmap: addr not mapped");
+
+  //Step 3: We need to reduce by len
+  //If len reduces to 0, we should mark is as free by setting f to 0,
+  //but only after writeback is done
+  p->fmap[index].len -= len;
+
+  //Step 4: Do we need to writeback?
+  if ((p->fmap[index].prot | PROT_WRITE) && (p->fmap[index].flags | MAP_SHARED))
     writeback = 1;
 
-  //Step 3: Unmap
-  //Assume there is no writeback, for simplicity
-  uint64 baseaddr = PGROUNDDOWN(addr);
+  //Step 5: Unmap by calling uvmunmap()
+  //FIXME: Assume there is writeback, for simplicity
   uint64 npages = len / PGSIZE;
   if (writeback)
     printf("sys_munmap: dummy write back...\n");
 
   uvmunmap(myproc()->pagetable, baseaddr, npages, 1);
 
-  //Step 4: reduce proc sz
-  p->sz -= len;
+  //We don't need to reduce f->ref because fileclose does that
 
-  //Step 5: decrement file ref so that fileclose() closes the file
-  int fd = p->fmap.fd;
-  struct file *f = p->ofile[fd];
-  f->ref -= 1;
-  DPRINTF("sys_munmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)f, f->ref);
-
-
-  printf("sys_munmap: release %d bytes at addr %p\n", len, (void *)addr);
+  printf("sys_munmap: release %d bytes at addr %p\n", len, (void *)baseaddr);
 
   return 0;
 }
 
 //Check whether user land addr va is in the proc's mmap region
-static uint64
-is_mmap(uint64 va)
-{
-  struct proc *p = myproc();
-  uint64 startua = p->fmap.addr.startua;
-  uint64 endua = p->fmap.addr.startua + p->fmap.addr.npage * PGSIZE;
-  return (va >= startua && va < endua);
-}
-
-// static void
-// clear_fmap(struct proc *p)
+// static uint64
+// is_mmap(uint64 va)
 // {
-//   ASSERT(p != 0);
-
-
+//   struct proc *p = myproc();
+//   uint64 startua = p->fmap.addr.startua;
+//   uint64 endua = p->fmap.addr.startua + p->fmap.addr.npage * PGSIZE;
+//   return (va >= startua && va < endua);
 // }

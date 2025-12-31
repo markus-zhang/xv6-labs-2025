@@ -62,12 +62,14 @@ fileclose(struct file *f)
   struct file ff;
 
   acquire(&ftable.lock);
+  printf("fileclose: ref is %d\n", f->ref);
   if(f->ref < 1)
     panic("fileclose");
   if(--f->ref > 0){
     //printf("fileclose: file 0x%ld has ref %d\n", (uint64)f, f->ref);
     //struct proc *p = myproc();
     //printf("%p\n", p);
+    //printf("fileclose: ref reduced 1 to %d\n", f->ref);
     release(&ftable.lock);
     return;
   }

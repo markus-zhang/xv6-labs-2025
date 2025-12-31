@@ -89,3 +89,21 @@ I also want to redo the work, because right now I'm simply incrementing `p->sz`.
 TODO list:
 [] Map mmap region to a separate VA region
 [] Create a new mmap reference for `f`. Actually, the hints says we can reuse `f->ref`, as in `filedup()`, so maybe I should look into whether my code misses a reference count change
+
+### Trial 2
+
+I'm reviewing all references of `p->sz` because I want to take VMA info out of `p->sz` -- i.e. `mmap()` and `munmap()` don't touch `p->sz`. Is it OK? Would it break some existing code? I plunged into a research about `p->sz` by looking at how is it being referenced by the code. Some notes:
+
+- `freeproc()` puts `p->sz` to 0. If we have a separate `struct vma`, `freeproc()` needs to put something in that sutrct to 0, too.
+
+- `growproc()` uses `uvmalloc()` and `uvmdealloc()` to increase/decrease `p->sz`. `p->sz` is not only the total size of proc memory occupied, but also the VA that the proc grows/reduces. xv6 treats user proc addresses as linear -- there is no gap -- `uvmalloc()` always increases `p->sz` and `uvmdealloc()` always decreases `p->sz`.
+
+- `kfork()` also copies `p->sz` to the child process.
+
+- `kexec()` grows memory imprint by using `uvmalloc()` to increment `p->sz`.
+
+- `fetchaddr()` also uses `p->sz` but I don't know exactly how this function is being used, gotta investigate further.
+
+- `sys_sbrk()` increments/decrements `p->sz`. This should be fine because it is a different mechanism to grow/reduce memory.
+
+- `vmfault()` uses `p->sz` to do a check. This is also fine because `mmapfault()` intercepts before this check.

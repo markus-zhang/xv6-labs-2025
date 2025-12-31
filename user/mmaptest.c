@@ -189,6 +189,8 @@ mmap_test(void)
 
   printf("test mmap dirty\n");
 
+  //TODO: All tests above completed successfully!
+
   // check that the writes to the mapped memory were
   // written to the file.
   if ((fd = open(f, O_RDONLY)) == -1)

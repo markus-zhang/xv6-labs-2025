@@ -57,3 +57,10 @@
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+
+//mmap, let's say 1GiB for each mmap region, that should be enough?
+#define GiB (1ULL << 30)
+//MAXMMAP = 16, so first mmap region starts from TRAPFRAME - 16 GiB
+//second starts from TRAPFRAME - 15 GiB
+//last starts from TRAPFRAME - GiB
+#define MMAPSTART (TRAPFRAME - MAXMMAP * GiB)

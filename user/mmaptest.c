@@ -196,13 +196,20 @@ mmap_test(void)
   // written to the file.
   if ((fd = open(f, O_RDONLY)) == -1)
     err("open (4)");
-  if(read(fd, buf, PGSIZE) != PGSIZE)
+  int temp = read(fd, buf, PGSIZE);
+  printf("mmaptest: first read 0x%x bytes\n", temp);
+  // if(read(fd, buf, PGSIZE) != PGSIZE)
+  if(temp != PGSIZE)
     err("dirty read #1");
   for (i = 0; i < PGSIZE; i++){
     if (buf[i] != 'B')
       err("file page 0 does not contain modifications");
   }
-  int temp = read(fd, buf, PGSIZE);
+  //TODO: I don't get it, how come it only reads half of a page?
+  //munmap() wrote back two pages, right? And p actually has 3 pages,
+  //first page is all 'B' and next two pages is all 'C'.
+  //I don't see any chance of half a page anywhere.
+  temp = read(fd, buf, PGSIZE);
   // if(read(fd, buf, PGSIZE) != PGSIZE/2)
   if(temp != PGSIZE/2)
   {

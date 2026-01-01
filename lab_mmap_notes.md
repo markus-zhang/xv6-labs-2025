@@ -108,21 +108,138 @@ I'm reviewing all references of `p->sz` because I want to take VMA info out of `
 
 - `vmfault()` uses `p->sz` to do a check. This is also fine because `mmapfault()` intercepts before this check.
 
-OK I managed to solve the read fault. But the writeback doesn't work. I traced the problem to `filewrite()`, in which `i != n`, so `ret` is -1. 
+OK I managed to solve the read fault. But the writeback doesn't work. I traced the problem to `filewrite()`. I have further traced to `either_copyin()` which is called by `writei()`, which is called by `filewrite()`. Looks like there was a failure when `src` is `0x3c00000000`. It was definitely a deadlock.
 
-I have further traced to `either_copyin()` which is called by `writei()`, which is called by `filewrite()`. Looks like there was a failure when `src` is `0x3c00000000`. Not sure what is going on so I decided to dig in further. I think it has something to do with `ip->size`, but I have no idea TBH.
+So after a night of debugging I figured out the source (but I couldn't figure out a solution). Note that before `munmap(p, PGSIZE*2)` the test program runs `_v1(p)`. The `_v1(p)` essentially looks at two pages, and check the contents of the first 1.5 pages against 'A' and the rest of 0.5 pages against 0:
 
-Hmmm, maybe `len` is not updated properly? Because `mmap()` did create the entry with `len` equals `0x3000` (3 pages), but somehow when I inspect the entry in `findmmapwithin()`, `len` was modified to `0x1000`.
-
-I think I found the reason! Somehow, I moved this part before writeback:
 ```C
-  //FIXME: This is WRONG! We need to keep the original len for writeback.
-  //Actually I did mention that in the last line, not sure why I forgot about it!
-  //Step 3: We need to reduce by len
-  //If len reduces to 0, we should mark is as free by setting f to 0,
-  //but only after writeback is done
-  int oldlen = p->fmap[index].len;  //write back needs to know the total len
-  p->fmap[index].len -= len;
+void
+_v1(char *p)
+{
+  int i;
+  for (i = 0; i < PGSIZE*2; i++) {
+    if (i < PGSIZE + (PGSIZE/2)) {
+      if (p[i] != 'A') {
+        printf("mismatch at %d, wanted 'A', got 0x%x\n", i, p[i]);
+        err("v1 mismatch (1)");
+      }
+    } else {
+      if (p[i] != 0) {
+        printf("mismatch at %d, wanted zero, got 0x%x\n", i, p[i]);
+        err("v1 mismatch (2)");
+      }
+    }
+  }
+}
 ```
 
-What's the issue with the ^ code? It reduces `p->fmap[index].len`, so that even when we keep the origin `len` as in `oldlen`, `filewrite()` eventually needs to look at 
+The memory space (`p`) `_v1()` touches was created by `mmap()`:
+
+```C
+p = mmap(0, PGSIZE*3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+```
+
+So what we have is 3 lazily allocated pages and `_v1(p)` checks 2 of them. We know that hitting a lazily allocated page is going to hit `vmfault()`, and because it is a mmap memory region, it in turn goes into `mmapfault()` -- and indeed, if I `printf()` one message for each `mmapfault()` call, I can see that two pages are allocated. One starting from 0x0000003bffffe000 and the other from 0x0000003bfffff000.
+
+```
+mmapfault: begin for va 0x0000003bffffe000
+mmapfault: read 0x1000 bytes
+mmapfault: begin for va 0x0000003bfffff000
+mmapfault: read 0x800 bytes
+```
+
+Everything works fine till this point. Now, note that the 3rd page has never been physically allocated. But `munmap()` writes back all 3 pages. So once the program tries to write into the 3rd page, `filewrite()` calls `either_copyin()` calls `copyin()`, and in this while loop `pa0` is 0 for the 3rd page because it has never been mapped/allocated. So it tried to go into `vmfault()` to map/allocate the 3rd page. And `vmfault()` calls `fileread()` to load this page. **`filewrite()` locks the inode for each write, and `fileread()` tries to acquire the lock, too, which causes the deadlock.**
+
+```C
+  while(len > 0){
+    va0 = PGROUNDDOWN(srcva);
+    pa0 = walkaddr(pagetable, va0);
+    //3rd page was never allocated
+    if(pa0 == 0) {
+      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+        return -1;
+      }
+    }
+    //Rest of the code
+  }
+```
+
+However, once I look at how `munmap()` is getting called in `mmaptest.c`, I realized that only 2 pages are unmapped.
+
+```C
+// unmap just the first two of three pages of mapped memory.
+if (munmap(p, PGSIZE*2) == -1)
+  err("munmap (3)");
+```
+
+This led me to think that maybe I should only write back 2 pages. Let me check if it works.
+
+### Trial 3
+
+OK after the change the deadlock was fixed, which makes sense because `filewrite()` never wrote into pages that were not mapped before. However, I got into a new (or old, as I have seen it before) issue:
+
+```
+test mmap read/write: OK
+test mmap dirty
+mmaptest: read returns 0x1000
+mmaptest failure: dirty read #2, pid=3
+```
+
+I don't get it. How come a `read()` returns half a page?
+
+```C
+// check that the writes to the mapped memory were
+  // written to the file.
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (4)");
+  if(read(fd, buf, PGSIZE) != PGSIZE)
+    err("dirty read #1");
+  for (i = 0; i < PGSIZE; i++){
+    if (buf[i] != 'B')
+      err("file page 0 does not contain modifications");
+  }
+  int temp = read(fd, buf, PGSIZE);
+  // if(read(fd, buf, PGSIZE) != PGSIZE/2)
+  if(temp != PGSIZE/2)
+  {
+    printf("mmaptest: read returns 0x%x\n", temp);
+    err("dirty read #2");
+  }
+```
+
+From what I see in `fileread()`, `f->ip` has size of 0x2000 bytes. This makes sense? Because we just wrote back 2 full pages.
+
+```
+(gdb) p *f->ip
+$5 = {dev = 0x1, inum = 0x19, ref = 0x3, lock = {locked = 0x1, lk = {locked = 0x0, name = 0x80007730 "sleep lock", cpu = 0x0 <err>}, name
+ = 0x800075e8 "inode", pid = 0x3}, valid = 0x1, type = 0x2, major = 0x0, minor = 0x0, nlink = 0x1, size = 0x2000, addrs = {0x3ec, 0x3ed,
+0x3ee, 0x3ef, 0x3f0, 0x3f1, 0x3f2, 0x3f3, 0x0, 0x0, 0x0, 0x0, 0x0}}
+```
+
+Investigating `bp` (the physical block) in `readi()`, I don't see any problem. In the first for loop, it shows 0x0400 'C' which was written back in `munmap()`.
+
+```
+(gdb) p *bp
+$10 = {valid = 0x1, disk = 0x0, dev = 0x1, blockno = 0x3f0, lock = {locked = 0x1, lk = {locked = 0x0, name = 0x80007730 "sleep lock", cpu
+ = 0x0 <err>}, name = 0x80007558 "buffer", pid = 0x3}, refcnt = 0x1, prev = 0x8001c038 <bcache+25600>, next = 0x80016500 <bcache+2248>, d
+ata = 'C' <repeats 1024 times>}
+```
+
+In the second loop, it shows 0x0400 'C' as well. Note that `prev` is different from the above one.
+
+```
+(gdb) p *bp
+$15 = {valid = 0x1, disk = 0x0, dev = 0x1, blockno = 0x3f1, lock = {locked = 0x1, lk = {locked = 0x0, name = 0x80007730 "sleep lock", cpu
+ = 0x0 <err>}, name = 0x80007558 "buffer", pid = 0x3}, refcnt = 0x1, prev = 0x80018c18 <bcache+12256>, next = 0x80016500 <bcache+2248>, d
+ata = 'C' <repeats 1024 times>}
+```
+
+In the third loop, same story.
+
+```
+(gdb) p *bp
+$18 = {valid = 0x1, disk = 0x0, dev = 0x1, blockno = 0x3f2, lock = {locked = 0x1, lk = {locked = 0x0, name = 0x80007730 "sleep lock", cpu
+ = 0x0 <err>}, name = 0x80007558 "buffer", pid = 0x3}, refcnt = 0x1, prev = 0x800194c8 <bcache+14480>, next = 0x80019070 <bcache+13368>,
+data = 'C' <repeats 1024 times>}
+```
+

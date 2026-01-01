@@ -645,13 +645,7 @@ sys_munmap(void)
   if (index == -1)
     panic("sys:munmap: addr not mapped");
 
-  //FIXME: This is WRONG! We need to keep the original len for writeback.
-  //Actually I did mention that in the last line, not sure why I forgot about it!
-  //Step 3: We need to reduce by len
-  //If len reduces to 0, we should mark is as free by setting f to 0,
-  //but only after writeback is done
   int oldlen = p->fmap[index].len;  //write back needs to know the total len
-  // p->fmap[index].len -= len;
 
   //Step 4: Do we need to writeback?
   //Has to have PROT_WRITE as well as MAP_SHARED
@@ -677,7 +671,34 @@ sys_munmap(void)
     //FIXME: filewrite() calls writei() calls either_copyin() calls copyin(),
     //and sometimes copyin() calls vmfault() because the memory is not allocated.
     //Eventually it calls fileread() which stuck at ilock().
-    int ret = filewrite(f, baseaddr, oldlen);
+    int ret = filewrite(f, baseaddr, len);
+    // int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    // int i = 0;
+    // int n = p->fmap[index].len;
+    // int r, ret = 0;
+    // while(i < n){
+    //   int n1 = n - i;
+    //   if(n1 > max)
+    //     n1 = max;
+
+    //   begin_op();
+    //   ilock(f->ip);
+    //   if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
+    //   {
+    //     printf("sys_munmap: offset is 0x%x\n", f->off);
+    //     f->off += r;
+    //   }
+    //   iunlock(f->ip);
+    //   end_op();
+
+    //   if(r != n1){
+    //     // error from writei
+    //     printf("sys_munmap: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
+    //     break;
+    //   }
+    //   i += r;
+    // }
+    // ret = (i == n ? n : -1);
     printf("filewrite: returns %d\n", ret);
   }
 

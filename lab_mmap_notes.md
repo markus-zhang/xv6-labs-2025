@@ -243,3 +243,56 @@ $18 = {valid = 0x1, disk = 0x0, dev = 0x1, blockno = 0x3f2, lock = {locked = 0x1
 data = 'C' <repeats 1024 times>}
 ```
 
+I was out of ideas so I had a discussion with ChatGPT. Apparently `filewrite()` is not supposed to increase the size of the file, which I still don't completely understand the why. But essentially, `filewrite()` should ONLY write back `inode->size` bytes of contents, even if the mmapped array is longer than that. So we only need to make one change of the code:
+
+```C
+    //NOTE: `filewrite()` is not supposed to increment file size.
+    //So we need to fetch the size first and write properly.
+    printf("file size: 0x%x\n", f->ip->size);
+    int ret = filewrite(f, baseaddr, f->ip->size);
+```
+
+### Trial 4
+
+Now the test goes on to the "test not-mapped unmap" part. In my code it immediately throws a panic:
+
+```C
+  //Step 2: Check which mmap region addr belongs to
+  struct proc *p = myproc();
+  int index = findmmapbase(p, baseaddr);
+  if (index == -1)
+    panic("sys:munmap: addr not mapped");
+```
+
+My pet peeve about these labs is that it doesn't say anything about the specification. I just have to guess what the code should do. The Linux man page says:
+
+> The munmap() system call deletes the mappings for the specified
+  address range, and causes further references to addresses within
+  the range to generate invalid memory references.  The region is
+  also automatically unmapped when the process is terminated.  On
+  the other hand, closing the file descriptor does not unmap the
+  region.
+
+> The address addr must be a multiple of the page size (but length
+  need not be).  All pages containing a part of the indicated range
+  are unmapped, and subsequent references to these pages will
+  generate SIGSEGV.  It is not an error if the indicated range does
+  not contain any mapped pages.
+
+> On success, munmap() returns 0.  On failure, it returns -1, and
+  errno is set to indicate the error (probably to EINVAL).
+
+I think this is what `munmap()` is supposed to do -- Check whether the `addr` is in one of the mmap region:
+  - If yes, write back, but do not change the size of the file (`inode->size`). Then call `uvmunmap()` to unmap/dealloc the pages.
+  - If no, just call `uvmunmap()` to unmap/dealloc the pages.
+
+OK I managed to pass the not-mapped unmap test. But the lazy access has another issues, and it's probably a deadlock, again.
+
+```
+test lazy access
+sys_mmap: done, mmap region starts from 0x0000003c3fffe000, len 0x2000
+mmapfault: begin for va 0x0000003c3fffe000
+mmapfault: read 0x1000 bytes
+mmapfault: begin for va 0x0000003c3ffff000
+```
+

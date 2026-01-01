@@ -597,7 +597,7 @@ sys_mmap(void)
   p->fmap[lastfreevma] = fm;
   //Increment file ref so that fileclose() keeps the file open, I think
   fm.f->ref += 1;
-  printf("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)fm.f, fm.f->ref);
+  // printf("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)fm.f, fm.f->ref);
 
   //We did not allocate/mappage,
   //so next time the program tries to access these pages,
@@ -626,6 +626,7 @@ sys_munmap(void)
 {
   uint64 addr = 0;
   int len;
+  int outofrange = 0;
   int writeback = 0;
 
   //Step 1: Read cli arguments
@@ -643,15 +644,18 @@ sys_munmap(void)
   struct proc *p = myproc();
   int index = findmmapbase(p, baseaddr);
   if (index == -1)
-    panic("sys:munmap: addr not mapped");
+    outofrange = 1;
 
-  int oldlen = p->fmap[index].len;  //write back needs to know the total len
+  // int oldlen = p->fmap[index].len;  //write back needs to know the total len
 
   //Step 4: Do we need to writeback?
   //Has to have PROT_WRITE as well as MAP_SHARED
   //TODO: Actually f->writable should also be non-zero
-  if ((p->fmap[index].prot & PROT_WRITE) && (p->fmap[index].flags & MAP_SHARED))
-    writeback = 1;
+  if (outofrange == 0)
+  {
+    if ((p->fmap[index].prot & PROT_WRITE) && (p->fmap[index].flags & MAP_SHARED))
+      writeback = 1;
+  }
 
   //Step 5: Unmap by calling uvmunmap()
   //NOTE: We have to write back here. We cannot use vmfault(),
@@ -661,17 +665,17 @@ sys_munmap(void)
   if (writeback)
   {
     struct file *f = p->fmap[index].f;
-    printf("sys_munmap: writing back 0x%x bytes for addr %p\n", oldlen, (void *)baseaddr);
+    // printf("sys_munmap: writing back 0x%x bytes for addr %p\n", oldlen, (void *)baseaddr);
     if (!(f->writable))
       panic("sys_munmap: Supposed to writeback but f is not writable");
 
     //NOTE: _v1(p) calls `fileread()` which modifies f->off.
     //So we need to reset it to 0 once we decide to write back.
     f->off = 0;
-    //FIXME: filewrite() calls writei() calls either_copyin() calls copyin(),
-    //and sometimes copyin() calls vmfault() because the memory is not allocated.
-    //Eventually it calls fileread() which stuck at ilock().
-    int ret = filewrite(f, baseaddr, len);
+    //NOTE: `filewrite()` is not supposed to increment file size.
+    //So we need to fetch the size first and write properly.
+    // printf("file size: 0x%x\n", f->ip->size);
+    int ret = filewrite(f, baseaddr, f->ip->size);
     // int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     // int i = 0;
     // int n = p->fmap[index].len;
@@ -680,7 +684,7 @@ sys_munmap(void)
     //   int n1 = n - i;
     //   if(n1 > max)
     //     n1 = max;
-
+    //
     //   begin_op();
     //   ilock(f->ip);
     //   if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
@@ -690,7 +694,7 @@ sys_munmap(void)
     //   }
     //   iunlock(f->ip);
     //   end_op();
-
+    //
     //   if(r != n1){
     //     // error from writei
     //     printf("sys_munmap: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
@@ -702,6 +706,8 @@ sys_munmap(void)
     printf("filewrite: returns %d\n", ret);
   }
 
+  //Unlike writeback, where we are not supposed to over-write,
+  //unmap should unmap whatever the caller requests.
   uvmunmap(p->pagetable, baseaddr, npages, 1);
 
   // printf("sys_munmap: f %p offset is %d\n", p->fmap[index].f, p->fmap[index].f->off);

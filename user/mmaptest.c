@@ -176,8 +176,6 @@ mmap_test(void)
   // check that the mapping still works after close(fd).
   _v1(p);
 
-  //TODO: All tests above completed successfully!
-
   // write the mapped memory.
   for (i = 0; i < PGSIZE; i++)
     p[i] = 'B';
@@ -205,10 +203,10 @@ mmap_test(void)
     if (buf[i] != 'B')
       err("file page 0 does not contain modifications");
   }
-  //TODO: I don't get it, how come it only reads half of a page?
-  //munmap() wrote back two pages, right? And p actually has 3 pages,
-  //first page is all 'B' and next two pages is all 'C'.
-  //I don't see any chance of half a page anywhere.
+  //NOTE: OK now I get it, after discussing with ChatGPT.
+  //So originally the file was created with a size of 1.5 pages.
+  //See makefile().
+  //So `filewrite()` in `munmap()` is not supposed to increment it.
   temp = read(fd, buf, PGSIZE);
   // if(read(fd, buf, PGSIZE) != PGSIZE/2)
   if(temp != PGSIZE/2)
@@ -232,6 +230,8 @@ mmap_test(void)
     err("munmap (4)");
 
   printf("test not-mapped unmap: OK\n");
+
+  //TODO: All tests above completed successfully!
 
   printf("test lazy access\n");
 

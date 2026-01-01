@@ -168,7 +168,7 @@ filewrite(struct file *f, uint64 addr, int n)
       ilock(f->ip);
       if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
       {
-        printf("filewrite: offset is 0x%x\n", f->off);
+        // printf("filewrite: offset is 0x%x\n", f->off);
         f->off += r;
       }
       iunlock(f->ip);
@@ -183,10 +183,10 @@ filewrite(struct file *f, uint64 addr, int n)
     }
     ret = (i == n ? n : -1);
     //debug
-    if (ret == -1)
-      printf("filewrite: i 0x%x != n 0x%x\n", i, n);
-    else
-      printf("filewrite: ret is %d\n", ret);
+    // if (ret == -1)
+    //   printf("filewrite: i 0x%x != n 0x%x\n", i, n);
+    // else
+    //   printf("filewrite: ret is %d\n", ret);
   } else {
     panic("filewrite");
   }

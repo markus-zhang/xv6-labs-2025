@@ -528,6 +528,7 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 int
 writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
 {
+  printf("writei: src 0x%lx, off 0x%x, n 0x%x\n", src, off, n);
   uint tot, m;
   struct buf *bp;
 

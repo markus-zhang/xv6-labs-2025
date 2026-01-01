@@ -5,6 +5,7 @@
 #include "kernel/riscv.h"
 #include "kernel/fs.h"
 #include "user/user.h"
+#include "kernel/debug.h"
 
 void mmap_test();
 void fork_test();
@@ -175,6 +176,8 @@ mmap_test(void)
   // check that the mapping still works after close(fd).
   _v1(p);
 
+  //TODO: All tests above completed successfully!
+
   // write the mapped memory.
   for (i = 0; i < PGSIZE; i++)
     p[i] = 'B';
@@ -189,8 +192,6 @@ mmap_test(void)
 
   printf("test mmap dirty\n");
 
-  //TODO: All tests above completed successfully!
-
   // check that the writes to the mapped memory were
   // written to the file.
   if ((fd = open(f, O_RDONLY)) == -1)
@@ -201,8 +202,13 @@ mmap_test(void)
     if (buf[i] != 'B')
       err("file page 0 does not contain modifications");
   }
-  if(read(fd, buf, PGSIZE) != PGSIZE/2)
+  int temp = read(fd, buf, PGSIZE);
+  // if(read(fd, buf, PGSIZE) != PGSIZE/2)
+  if(temp != PGSIZE/2)
+  {
+    printf("mmaptest: read returns 0x%x\n", temp);
     err("dirty read #2");
+  }
   for (i = 0; i < PGSIZE/2; i++){
     if (buf[i] != 'C')
       err("file page 1 does not contain modifications");

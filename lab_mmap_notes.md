@@ -107,3 +107,22 @@ I'm reviewing all references of `p->sz` because I want to take VMA info out of `
 - `sys_sbrk()` increments/decrements `p->sz`. This should be fine because it is a different mechanism to grow/reduce memory.
 
 - `vmfault()` uses `p->sz` to do a check. This is also fine because `mmapfault()` intercepts before this check.
+
+OK I managed to solve the read fault. But the writeback doesn't work. I traced the problem to `filewrite()`, in which `i != n`, so `ret` is -1. 
+
+I have further traced to `either_copyin()` which is called by `writei()`, which is called by `filewrite()`. Looks like there was a failure when `src` is `0x3c00000000`. Not sure what is going on so I decided to dig in further. I think it has something to do with `ip->size`, but I have no idea TBH.
+
+Hmmm, maybe `len` is not updated properly? Because `mmap()` did create the entry with `len` equals `0x3000` (3 pages), but somehow when I inspect the entry in `findmmapwithin()`, `len` was modified to `0x1000`.
+
+I think I found the reason! Somehow, I moved this part before writeback:
+```C
+  //FIXME: This is WRONG! We need to keep the original len for writeback.
+  //Actually I did mention that in the last line, not sure why I forgot about it!
+  //Step 3: We need to reduce by len
+  //If len reduces to 0, we should mark is as free by setting f to 0,
+  //but only after writeback is done
+  int oldlen = p->fmap[index].len;  //write back needs to know the total len
+  p->fmap[index].len -= len;
+```
+
+What's the issue with the ^ code? It reduces `p->fmap[index].len`, so that even when we keep the origin `len` as in `oldlen`, `filewrite()` eventually needs to look at 

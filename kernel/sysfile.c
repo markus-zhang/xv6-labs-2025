@@ -102,21 +102,32 @@ sys_write(void)
 uint64
 sys_close(void)
 {
+  // int fd;
+  // struct file *f;
+
+  // if(argfd(0, &fd, &f) < 0)
+  //   return -1;
+
+  // //printf("sys_close: ref is %d\n", f->ref);
+  // if(f->ref == 0)
+  //   myproc()->ofile[fd] = 0;
+  // fileclose(f);
+  // //NOTE: mmap issue
+  // //I noticed that everytime `fileread()` is called, f->off is moved,
+  // //and as long as it's the same f, f->off retains the change.
+  // //This breaks `mmapfault()` for the second test in mmaptest.c.
+  // //LINK - user/mmaptest.c#fileoff_issue
+  // //Reset f->off if we intend to close it, even if we don't due to f->ref
+  // f->off = 0;
+  // return 0;
+
   int fd;
   struct file *f;
 
   if(argfd(0, &fd, &f) < 0)
     return -1;
+  myproc()->ofile[fd] = 0;
   fileclose(f);
-  if(f->ref == 0)
-    myproc()->ofile[fd] = 0;
-  //NOTE: mmap issue
-  //I noticed that everytime `fileread()` is called, f->off is moved,
-  //and as long as it's the same f, f->off retains the change.
-  //This breaks `mmapfault()` for the second test in mmaptest.c.
-  //LINK - user/mmaptest.c#fileoff_issue
-  //Reset f->off if we intend to close it, even if we don't due to f->ref
-  f->off = 0;
   return 0;
 }
 
@@ -553,6 +564,9 @@ sys_mmap(void)
   if (!f)
     panic("sys_mmap: fd already closed");
 
+  //NOTE: Probably should set offset too, because previous readi() moves offset
+  f->off = offset;
+
   //No R/W mapping for a file opened RO
   //Kinda complicated, I created the logic from reading mmaptest.c
   //I don't quite understand it TBH
@@ -590,7 +604,7 @@ sys_mmap(void)
   //it should tirgger vmfault(),which calls mmapfault() first
 
   //mmap starts from a specifc region ourside of "ordinary" memory allocation
-  printf("sys_mmap: done, mmap region starts from %p\n", (void *)fm.startua);
+  printf("sys_mmap: done, mmap region starts from %p, len 0x%x\n", (void *)fm.startua, fm.len);
   return (char*)fm.startua;
 }
 
@@ -631,22 +645,60 @@ sys_munmap(void)
   if (index == -1)
     panic("sys:munmap: addr not mapped");
 
+  //FIXME: This is WRONG! We need to keep the original len for writeback.
+  //Actually I did mention that in the last line, not sure why I forgot about it!
   //Step 3: We need to reduce by len
   //If len reduces to 0, we should mark is as free by setting f to 0,
   //but only after writeback is done
-  p->fmap[index].len -= len;
+  int oldlen = p->fmap[index].len;  //write back needs to know the total len
+  // p->fmap[index].len -= len;
 
   //Step 4: Do we need to writeback?
-  if ((p->fmap[index].prot | PROT_WRITE) && (p->fmap[index].flags | MAP_SHARED))
+  //Has to have PROT_WRITE as well as MAP_SHARED
+  //TODO: Actually f->writable should also be non-zero
+  if ((p->fmap[index].prot & PROT_WRITE) && (p->fmap[index].flags & MAP_SHARED))
     writeback = 1;
 
   //Step 5: Unmap by calling uvmunmap()
-  //FIXME: Assume there is writeback, for simplicity
+  //NOTE: We have to write back here. We cannot use vmfault(),
+  //because s_cause() = 15 is not triggered by mmap.
+  //Also this is more efficient because we writeback when the memory is ready to go.
   uint64 npages = len / PGSIZE;
   if (writeback)
-    printf("sys_munmap: dummy write back...\n");
+  {
+    struct file *f = p->fmap[index].f;
+    printf("sys_munmap: writing back 0x%x bytes for addr %p\n", oldlen, (void *)baseaddr);
+    if (!(f->writable))
+      panic("sys_munmap: Supposed to writeback but f is not writable");
 
-  uvmunmap(myproc()->pagetable, baseaddr, npages, 1);
+    //NOTE: _v1(p) calls `fileread()` which modifies f->off.
+    //So we need to reset it to 0 once we decide to write back.
+    f->off = 0;
+    //FIXME: filewrite() calls writei() calls either_copyin() calls copyin(),
+    //and sometimes copyin() calls vmfault() because the memory is not allocated.
+    //Eventually it calls fileread() which stuck at ilock().
+    int ret = filewrite(f, baseaddr, oldlen);
+    printf("filewrite: returns %d\n", ret);
+  }
+
+  uvmunmap(p->pagetable, baseaddr, npages, 1);
+
+  // printf("sys_munmap: f %p offset is %d\n", p->fmap[index].f, p->fmap[index].f->off);
+
+  //TODO: Shouldn't I remove the vma entry from p->fmap?
+  //We only remove the entry if ALL len has been unmapped
+  //When we munmap, make sure offset is cleared too
+  //p->fmap[index].f->off = 0;
+  if (len >= p->fmap[index].len)
+  {
+    p->fmap[index].f->ref -= 1;
+    p->fmap[index].f = 0;
+    p->fmap[index].flags = 0;
+    p->fmap[index].len = 0;
+    p->fmap[index].prot = 0;
+    p->fmap[index].startua = 0;
+    p->totalvma -= 1;
+  }
 
   //We don't need to reduce f->ref because fileclose does that
 

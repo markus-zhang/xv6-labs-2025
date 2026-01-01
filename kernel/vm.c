@@ -507,10 +507,12 @@ findmmapwithin(struct proc * p, uint64 addr)
 }
 
 //Stage 1 - Assume every fault is a read fault
+//Stage 2 - Start implementing write back
 //va is user land va
 uint64
 mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
 {
+  // printf("mmapfault: r_scause() is %ld\n", r_scause());
   ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
   ASSERT(pagetable != 0);
   //mmap region always lower than TRAMPOLINE
@@ -518,7 +520,7 @@ mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
   //technically a boolean
   ASSERT((read == 0) || (read == 1));
 
-  DPRINTF("mmapfault: begin for va %p\n", (void *)va);
+  printf("mmapfault: begin for va %p\n", (void *)va);
   //For read fault, should load file into va
   //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
   //va = 0x5400, then the page starts from 0x5000 to 0x6000
@@ -550,7 +552,7 @@ mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
   if (bytesread <= 0)
     panic("mmapfault: fileread failed!");
 
-  printf("mmapfault: read %d bytes\n", bytesread);
+  printf("mmapfault: read 0x%x bytes\n", bytesread);
   return mem;
 }
 

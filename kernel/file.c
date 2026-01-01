@@ -62,7 +62,7 @@ fileclose(struct file *f)
   struct file ff;
 
   acquire(&ftable.lock);
-  printf("fileclose: ref is %d\n", f->ref);
+  // printf("fileclose: ref is %d\n", f->ref);
   if(f->ref < 1)
     panic("fileclose");
   if(--f->ref > 0){
@@ -111,6 +111,7 @@ filestat(struct file *f, uint64 addr)
 int
 fileread(struct file *f, uint64 addr, int n)
 {
+  //printf("fileread: f %p, addr 0x%lx, n 0x%x, size 0x%x\n", f, addr, n, f->ip->size);
   int r = 0;
 
   if(f->readable == 0)
@@ -139,6 +140,7 @@ fileread(struct file *f, uint64 addr, int n)
 int
 filewrite(struct file *f, uint64 addr, int n)
 {
+  //printf("filewrite: f %p, addr 0x%lx, n 0x%x\n", f, addr, n);
   int r, ret = 0;
 
   if(f->writable == 0)
@@ -165,17 +167,26 @@ filewrite(struct file *f, uint64 addr, int n)
       begin_op();
       ilock(f->ip);
       if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
+      {
+        printf("filewrite: offset is 0x%x\n", f->off);
         f->off += r;
+      }
       iunlock(f->ip);
       end_op();
 
       if(r != n1){
         // error from writei
+        printf("filewrite: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
         break;
       }
       i += r;
     }
     ret = (i == n ? n : -1);
+    //debug
+    if (ret == -1)
+      printf("filewrite: i 0x%x != n 0x%x\n", i, n);
+    else
+      printf("filewrite: ret is %d\n", ret);
   } else {
     panic("filewrite");
   }

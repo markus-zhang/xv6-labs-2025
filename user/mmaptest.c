@@ -256,6 +256,7 @@ mmap_test(void)
     err("write");
   close(fd);
 
+  //Immediately traps into vmfault() because p is lazily allocated
   if(*p != 'm')
     err("read was not lazy");
 

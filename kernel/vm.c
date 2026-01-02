@@ -403,6 +403,29 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   return 0;
 }
 
+//mmap version copyin()
+int
+copyinback(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
+{
+  uint64 n, va0, pa0;
+
+  while(len > 0){
+    va0 = PGROUNDDOWN(srcva);
+    pa0 = walkaddr(pagetable, va0);
+    //Ignore unmapped pages
+    n = PGSIZE - (srcva - va0);
+    if(n > len)
+      n = len;
+    if(pa0)
+      memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+
+    len -= n;
+    dst += n;
+    srcva = va0 + PGSIZE;
+  }
+  return 0;
+}
+
 // Copy a null-terminated string from user to kernel.
 // Copy bytes to dst from virtual address srcva in a given page table,
 // until a '\0', or max.
@@ -508,7 +531,6 @@ findmmapwithin(struct proc * p, uint64 addr)
 
 //Stage 1 - Assume every fault is a read fault
 //Stage 2 - Start implementing write back
-//va is user land va
 uint64
 mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
 {
@@ -532,9 +554,13 @@ mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
   if (!f)
     panic("mmapfault: file is NULL");
 
-  //TODO: Check f->ref works for mmap and munmap
-  // int bytesread = fileread(f, va, PGSIZE);
-  // printf("mmapfault: read %d bytes\n", bytesread);
+  //Fetch file size -> # of pages to map
+  //For size = 0x1800 bytes, should load 2 pages, not 1
+  // int filesz = f->ip->size;
+  // int filepages = filesz / PGSIZE;
+  // if (filesz % PGSIZE != 0)
+  //   filepages += 1;
+
   uint64 mem = (uint64)kalloc();
   if (mem == 0)
     return 0;
@@ -555,6 +581,58 @@ mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
   printf("mmapfault: read 0x%x bytes\n", bytesread);
   return mem;
 }
+
+//Multiple-page version of mmapfault()
+// uint64
+// mmmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
+// {
+//   // printf("mmapfault: r_scause() is %ld\n", r_scause());
+//   ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
+//   ASSERT(pagetable != 0);
+//   //mmap region always lower than TRAMPOLINE
+//   ASSERT(va < TRAMPOLINE);
+//   //technically a boolean
+//   ASSERT((read == 0) || (read == 1));
+
+//   printf("mmapfault: begin for va %p\n", (void *)va);
+//   //For read fault, should load file into va
+//   //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
+//   //va = 0x5400, then the page starts from 0x5000 to 0x6000
+//   uint64 baseva = PGROUNDDOWN(va);
+//   struct proc *p = myproc();
+
+//   struct file *f = p->fmap[fmapidx].f;
+//   DPRINTF("mmapfault: ref of file %lx\n", (uint64)f);
+//   if (!f)
+//     panic("mmapfault: file is NULL");
+
+//   //Fetch file size -> # of pages to map
+//   //For size = 0x1800 bytes, should load 2 pages, not 1
+//   int totalsz = PGROUNDUP(f->ip->size); //e.g. 0x1800 becomes 0x2000
+//   // int filepages = filesz / PGSIZE;
+//   // if (filesz % PGSIZE != 0)
+//   //   filepages += 1;
+
+//   uint64 mem = (uint64)kalloc();
+//   if (mem == 0)
+//     return 0;
+//   memset((void *)mem, 0, PGSIZE);
+//   //I think we have to enable PTE_W even for readonly mmap regions
+//   //becuase we need to write into it for mmap.
+//   //RO/RW should be implemented by looking at p->fmap.addr.prot
+//   if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
+//   {
+//     kfree((void *)mem);
+//     return 0;
+//   }
+
+//   int bytesread = fileread(f, baseva, PGSIZE);
+//   if (bytesread <= 0)
+//     panic("mmapfault: fileread failed!");
+
+//   printf("mmapfault: read 0x%x bytes\n", bytesread);
+//   return mem;
+// }
 
 int
 ismapped(pagetable_t pagetable, uint64 va)

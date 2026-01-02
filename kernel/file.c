@@ -194,3 +194,50 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+//Write back to file f.
+//addr is a user virtual address.
+//Special function for sys_munmap().
+int
+filewriteback(struct file *f, uint64 addr, int n)
+{
+  int r, ret = 0;
+
+  if(f->writable == 0)
+    return -1;
+
+  if(f->type == FD_INODE)
+  {
+    // write a few blocks at a time to avoid exceeding
+    // the maximum log transaction size, including
+    // i-node, indirect block, allocation blocks,
+    // and 2 blocks of slop for non-aligned writes.
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    int i = 0;
+    while(i < n){
+      int n1 = n - i;
+      if(n1 > max)
+        n1 = max;
+
+      begin_op();
+      ilock(f->ip);
+      //Use special writebacki function
+      if ((r = writebacki(f->ip, 1, addr + i, f->off, n1)) > 0)
+      {
+        f->off += r;
+      }
+      iunlock(f->ip);
+      end_op();
+
+      if(r != n1){
+        // error from writei
+        printf("filewriteback: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
+        break;
+      }
+      i += r;
+    }
+    ret = (i == n ? n : -1);
+  } else {
+    panic("filewriteback");
+  }
+  return ret;
+}

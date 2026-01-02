@@ -562,6 +562,49 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
   return tot;
 }
 
+//Special version for writeback
+int
+writebacki(struct inode *ip, int user_src, uint64 src, uint off, uint n)
+{
+  // printf("writei: src 0x%lx, off 0x%x, n 0x%x\n", src, off, n);
+  uint tot, m;
+  struct buf *bp;
+
+  if(off > ip->size || off + n < off)
+    return -1;
+  if(off + n > MAXFILE*BSIZE)
+    return -1;
+
+  struct proc *p = myproc();
+
+  for(tot=0; tot<n; tot+=m, off+=m, src+=m)
+  {
+    uint addr = bmap(ip, off/BSIZE);
+    if(addr == 0)
+      break;
+    bp = bread(ip->dev, addr);
+    m = min(n - tot, BSIZE - off%BSIZE);
+    //Only from user to kernel
+    if(copyinback(p->pagetable, (void *)(bp->data + (off % BSIZE)), src, m) == -1)
+    {
+      brelse(bp);
+      break;
+    }
+    log_write(bp);
+    brelse(bp);
+  }
+
+  if(off > ip->size)
+    ip->size = off;
+
+  // write the i-node back to disk even if the size didn't change
+  // because the loop above might have called bmap() and added a new
+  // block to ip->addrs[].
+  iupdate(ip);
+
+  return tot;
+}
+
 // Directories
 
 int

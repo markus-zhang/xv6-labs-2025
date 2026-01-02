@@ -665,7 +665,7 @@ sys_munmap(void)
   if (writeback)
   {
     struct file *f = p->fmap[index].f;
-    // printf("sys_munmap: writing back 0x%x bytes for addr %p\n", oldlen, (void *)baseaddr);
+    printf("sys_munmap: writing back 0x%x bytes for addr %p\n", f->ip->size, (void *)baseaddr);
     if (!(f->writable))
       panic("sys_munmap: Supposed to writeback but f is not writable");
 
@@ -675,7 +675,7 @@ sys_munmap(void)
     //NOTE: `filewrite()` is not supposed to increment file size.
     //So we need to fetch the size first and write properly.
     // printf("file size: 0x%x\n", f->ip->size);
-    int ret = filewrite(f, baseaddr, f->ip->size);
+    int ret = filewriteback(f, baseaddr, f->ip->size);
     // int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     // int i = 0;
     // int n = p->fmap[index].len;
@@ -712,7 +712,7 @@ sys_munmap(void)
 
   // printf("sys_munmap: f %p offset is %d\n", p->fmap[index].f, p->fmap[index].f->off);
 
-  //TODO: Shouldn't I remove the vma entry from p->fmap?
+  //Remove the vma entry from p->fmap?
   //We only remove the entry if ALL len has been unmapped
   //When we munmap, make sure offset is cleared too
   //p->fmap[index].f->off = 0;

@@ -286,7 +286,7 @@ I think this is what `munmap()` is supposed to do -- Check whether the `addr` is
   - If yes, write back, but do not change the size of the file (`inode->size`). Then call `uvmunmap()` to unmap/dealloc the pages.
   - If no, just call `uvmunmap()` to unmap/dealloc the pages.
 
-OK I managed to pass the not-mapped unmap test. But the lazy access has another issues, and it's probably a deadlock, again.
+OK I managed to pass the not-mapped unmap test. But the lazy access has another issues, and it's probably a deadlock, again. So `munmap()` tries to write back and triggers `vmfault()`, which calls `mmapfault()` and calls `fileread()` eventually.
 
 ```
 test lazy access
@@ -295,4 +295,12 @@ mmapfault: begin for va 0x0000003c3fffe000
 mmapfault: read 0x1000 bytes
 mmapfault: begin for va 0x0000003c3ffff000
 ```
+
+Here is my thought, maybe `mmapfault()` should load the whole file into memory, once triggered by `if(*p != 'm')`, instead of just one page. Because this will solve the deadlock issue in `munmap()`. `mummap()` should NEVER trigger `vmfault()` during write back, because it locks the inode, and `vmfault()` calls `fileread()` which also tries to acquire the lock in the inode. If all pages were already mapped, `munmap()` then did not need to try to map/allocate. Anyway it is very weird for a write back routine to call `fileread()`...
+
+Hmmm, I'm not sure ^ is a good idea. `mmapfault()` needs to allocate physical pages for mapped VA. So how do you allocate multiple pages in one shot but one of them failed? I mean, it's doable, but it's ugly. 
+
+I discussed with ChatGPT again because I really don't want to add the dirty bit. Eventually I realized that as long as I implement the write back myself, instead of calling `filewrite()`, I'd have control of how many pages I want to write back, without passing an argument to `sys_munmap()`. Just to save some time, I created a special version for `filewrite()`, `writei()` and `copyin()`. Now I'm good for both lazy access test and two files test.
+
+The next objective is to pass fork test. I haven't modified the code for `kfork()` so need to take a look.
 

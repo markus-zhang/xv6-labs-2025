@@ -555,7 +555,7 @@ sys_mmap(void)
   DPRINTF("sys_mmap: prot is %d\n", prot);
   DPRINTF("sys_mmap: flags is %d\n", flags);
   DPRINTF("sys_mmap: fd is %d\n", fd);
-  printf("sys_mmap: offset is %d\n", offset);
+  DPRINTF("sys_mmap: offset is %d\n", offset);
 
   //Step 2: Lazy allocate len/PGSIZE pages for mmap
   struct proc *p = myproc();
@@ -597,6 +597,7 @@ sys_mmap(void)
   p->fmap[lastfreevma] = fm;
   //Increment file ref so that fileclose() keeps the file open, I think
   fm.f->ref += 1;
+  p->totalvma += 1;
   // printf("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)fm.f, fm.f->ref);
 
   //We did not allocate/mappage,
@@ -647,7 +648,10 @@ sys_munmap(void)
   struct proc *p = myproc();
   int index = findmmapbase(p, baseaddr);
   if (index == -1)
+  {
+    printf("Out of range 0x%lx\n", baseaddr);
     outofrange = 1;
+  }
 
   // int oldlen = p->fmap[index].len;  //write back needs to know the total len
 
@@ -706,7 +710,7 @@ sys_munmap(void)
     //   i += r;
     // }
     // ret = (i == n ? n : -1);
-    printf("filewrite: returns %d\n", ret);
+    printf("filewrite: returns 0x%x\n", ret);
   }
 
   //Unlike writeback, where we are not supposed to over-write,
@@ -715,13 +719,17 @@ sys_munmap(void)
 
   // printf("sys_munmap: f %p offset is %d\n", p->fmap[index].f, p->fmap[index].f->off);
 
-  //Remove the vma entry from p->fmap?
-  //We only remove the entry if ALL len has been unmapped
-  //When we munmap, make sure offset is cleared too
-  //p->fmap[index].f->off = 0;
-  if (len >= p->fmap[index].len)
+  //We need to track which part of the mmap region is unmapped.
+  //And only when the WHOLE region has been unmapped that we reset the entry.
+  //Example: Say we have a mmap region of 3 pages (12KiB).
+  //The first call unmaps 1 page (the first page).
+  //Should I increment startua by 1 page as well? 
+  //The second call unmaps 2 pages. Only by now I remove the entry.
+  uint64 newstartua = p->fmap[index].startua + len;
+  uint64 endua = p->fmap[index].startua + p->fmap[index].len;
+  //If we already unmapped the whole mmap region, remove the entry.
+  if (newstartua >= endua)
   {
-    // printf("Removing fmap entry %d...\n", index);
     p->fmap[index].f->ref -= 1;
     p->fmap[index].f = 0;
     p->fmap[index].flags = 0;
@@ -730,10 +738,16 @@ sys_munmap(void)
     p->fmap[index].startua = 0;
     p->totalvma -= 1;
   }
+  //Otherwise, simply increment startua
+  else
+  {
+    p->fmap[index].startua = newstartua;
+    p->fmap[index].len -= len;
+  }
 
-  //We don't need to reduce f->ref because fileclose does that
+  //We don't need to reduce f->ref because fileclose does that.
 
-  printf("sys_munmap: release %d bytes at addr %p\n", len, (void *)baseaddr);
+  printf("sys_munmap: release 0x%x bytes at addr %p\n", len, (void *)baseaddr);
 
   return 0;
 }

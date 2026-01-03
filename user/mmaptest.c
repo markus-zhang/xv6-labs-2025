@@ -19,8 +19,8 @@ int
 main(int argc, char *argv[])
 {
   //My own test
-  reverse_test();
-  exit(0);
+  // reverse_test();
+  // exit(0);
 
   mmap_test();
   fork_test();
@@ -252,7 +252,6 @@ mmap_test(void)
   if ((fd = open(f, O_RDONLY)) == -1)
     err("open (4)");
   int temp = read(fd, buf, PGSIZE);
-  printf("mmaptest: first read 0x%x bytes\n", temp);
   // if(read(fd, buf, PGSIZE) != PGSIZE)
   if(temp != PGSIZE)
     err("dirty read #1");

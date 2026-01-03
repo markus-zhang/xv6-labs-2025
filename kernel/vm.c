@@ -7,6 +7,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
 #include "debug.h"
 
 /*
@@ -542,7 +544,7 @@ mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
   //technically a boolean
   ASSERT((read == 0) || (read == 1));
 
-  printf("mmapfault: begin for va %p\n", (void *)va);
+  // printf("mmapfault: begin for va %p\n", (void *)va);
   //For read fault, should load file into va
   //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
   //va = 0x5400, then the page starts from 0x5000 to 0x6000
@@ -574,11 +576,23 @@ mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
     return 0;
   }
 
-  int bytesread = fileread(f, baseva, PGSIZE);
+  //FIXME: Naive sequential load, each read increments offset.
+  //What if user program does NOT read in order? Read Trial 5 in lab note.
+  //We should be able to get base va addr from fmap
+  int basefmava = p->fmap[fmapidx].startua;
+  int vaoff = baseva - basefmava;
+  // printf("offset: 0x%x\n", vaoff);
+  //Can't use fileread() directly because it doesn't have an argument for offset
+  ilock(f->ip);
+  int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+  //Do not increment the offset as in fileread(),
+  //because offset = diff between startua and baseva
+  iunlock(f->ip);
+  // int bytesread = fileread(f, baseva, PGSIZE);
   if (bytesread <= 0)
     panic("mmapfault: fileread failed!");
 
-  printf("mmapfault: read 0x%x bytes\n", bytesread);
+  // printf("mmapfault: read 0x%x bytes\n", bytesread);
   return mem;
 }
 

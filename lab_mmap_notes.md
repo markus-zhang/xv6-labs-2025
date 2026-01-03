@@ -378,3 +378,78 @@ On the other hand, judging from my limited Linux programming experience, it is u
 Now I think there is a way for `mmapfault()` to check the requested offset. For each `p->fmap[]` entry, there is a field called `startua`. This is the VA_START of the beginning of the mmap region. Whenever `mmapfault()` is triggered, we always know the VA of the mmap region. So we can find the different between this VA and VA_START to figure out which page the user program is trying to load.
 
 For example, let's say the mmap region is 10 pages long, starting from 0x1000, till 0xB000. If VA is 0x1000, we know it's the first page, if it's 0x4000, we know it's the 4th page, and so on. And then we can move the offset around accordingly.
+
+### Trial 6
+
+Found another logic error in `sys_munmap()`. TBH sometimes I simply have no idea what the logic should be, and even looking at the test program doesn't give a clear answer. For example, at certain point we need to remove an fma entry, right? Yeah, but when? Should we remove it once the unmapped region SURPASS the file size, or until the whole mmap region has been unmapped? This is a concern when the test program tries to map more regions (e.g. 3 pages) than the file size (1.5 pages).
+
+Judging from the test program. I'm not supposed to remove the fma entry until the whole region has been unmapped, which makes sense. The logic error is that at the end of `sys_munmap()` I did not increment `startua` and reduce `len` of the fma entry properly. I got away because the test program does not test this part. It doesn't test when a fma entry should be removed, and by actually not removing that entry in time, I got away with the 3 page test. Here is the test:
+
+```C
+//map 3 pages
+p = mmap(0, PGSIZE*3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+// write the mapped memory.
+for (i = 0; i < PGSIZE; i++)
+  p[i] = 'B';
+for (i = PGSIZE; i < PGSIZE*2; i++)
+  p[i] = 'C';
+
+//unmap 2 pages
+if (munmap(p, PGSIZE*2) == -1)
+  err("munmap (3)");
+
+// unmap the rest of the mapped memory.
+if (munmap(p+PGSIZE*2, PGSIZE) == -1)
+  err("munmap (4)");
+```
+
+In this test, if I remove the entry after the first unmap, just because the file is 1.5 pages long, which is < 2 pages unmapped, the second `munmap()` will result in error because the entry is gone. I actually didn't think much about it, because in my original implementation the code to remove the entry is wrong:
+
+```C
+  //Remove the vma entry from p->fmap?
+  //We only remove the entry if ALL len has been unmapped
+  //When we munmap, make sure offset is cleared too
+  //p->fmap[index].f->off = 0;
+  if (len >= p->fmap[index].len)
+  {
+    // printf("Removing fmap entry %d...\n", index);
+    p->fmap[index].f->ref -= 1;
+    p->fmap[index].f = 0;
+    p->fmap[index].flags = 0;
+    p->fmap[index].len = 0;
+    p->fmap[index].prot = 0;
+    p->fmap[index].startua = 0;
+    p->totalvma -= 1;
+  }
+```
+
+This is very wrong, because I did not reduce `p->fmap[index].len` for a partial unmap. Plus I did not increment `p->fmap[index].startua` for each partial unmap. So this entry never got removed (first unmap is 2 pages, second 1 page, neither is greater than 3 pages which is `p->fmap[index].len`, so this `if` branch is never executed). Now I have corrected the code:
+
+```C
+//We need to track which part of the mmap region is unmapped.
+  //And only when the WHOLE region has been unmapped that we reset the entry.
+  //Example: Say we have a mmap region of 3 pages (12KiB).
+  //The first call unmaps 1 page (the first page).
+  //Should I increment startua by 1 page as well? 
+  //The second call unmaps 2 pages. Only by now I remove the entry.
+  uint64 newstartua = p->fmap[index].startua + len;
+  uint64 endua = p->fmap[index].startua + p->fmap[index].len;
+  //If we already unmapped the whole mmap region, remove the entry.
+  if (newstartua >= endua)
+  {
+    p->fmap[index].f->ref -= 1;
+    p->fmap[index].f = 0;
+    p->fmap[index].flags = 0;
+    p->fmap[index].len = 0;
+    p->fmap[index].prot = 0;
+    p->fmap[index].startua = 0;
+    p->totalvma -= 1;
+  }
+  //Otherwise, simply move startua
+  else
+  {
+    p->fmap[index].startua = newstartua;
+    p->fmap[index].len -= len;
+  }
+
+```

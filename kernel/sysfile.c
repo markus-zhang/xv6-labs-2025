@@ -625,10 +625,10 @@ ffmmap(struct proc * p)
   return -1;
 }
 
-uint64
+vaddr_t
 sys_munmap(void)
 {
-  uint64 addr = 0;
+  vaddr_t addr = 0;
   int len;
   int outofrange = 0;
   int writeback = 0;
@@ -636,7 +636,7 @@ sys_munmap(void)
   //Step 1: Read cli arguments
   argaddr(0, &addr);
   argint(1, &len);
-  uint64 baseaddr = PGROUNDDOWN(addr);
+  vaddr_t baseaddr = PGROUNDDOWN(addr);
 
   if (len % PGSIZE)
   {
@@ -653,14 +653,16 @@ sys_munmap(void)
     outofrange = 1;
   }
 
-  // int oldlen = p->fmap[index].len;  //write back needs to know the total len
-
   //Step 4: Do we need to writeback?
   //Has to have PROT_WRITE as well as MAP_SHARED
   //TODO: Actually f->writable should also be non-zero
   if (outofrange == 0)
   {
-    if ((p->fmap[index].prot & PROT_WRITE) && (p->fmap[index].flags & MAP_SHARED))
+    if ((
+      p->fmap[index].prot & PROT_WRITE) && 
+      (p->fmap[index].flags & MAP_SHARED) &&
+      p->fmap[index].f->writable
+    )
       writeback = 1;
   }
 
@@ -725,8 +727,8 @@ sys_munmap(void)
   //The first call unmaps 1 page (the first page).
   //Should I increment startua by 1 page as well? 
   //The second call unmaps 2 pages. Only by now I remove the entry.
-  uint64 newstartua = p->fmap[index].startua + len;
-  uint64 endua = p->fmap[index].startua + p->fmap[index].len;
+  vaddr_t newstartua = p->fmap[index].startua + len;
+  vaddr_t endua = p->fmap[index].startua + p->fmap[index].len;
   //If we already unmapped the whole mmap region, remove the entry.
   if (newstartua >= endua)
   {

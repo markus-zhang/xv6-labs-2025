@@ -10,6 +10,7 @@
 void mmap_test();
 void fork_test();
 void more_test();
+void reverse_test();
 char buf[PGSIZE];
 
 #define MAP_FAILED ((char *) -1)
@@ -17,6 +18,10 @@ char buf[PGSIZE];
 int
 main(int argc, char *argv[])
 {
+  //My own test
+  reverse_test();
+  exit(0);
+
   mmap_test();
   fork_test();
   more_test();
@@ -53,6 +58,36 @@ _v1(char *p)
   }
 }
 
+//NOTE: Added test to check data in reverse order (2nd page first)
+//Read lab notes (Trial 5) for the why.
+//If mmapfault() naively reads file sequentially,
+//Then the first read reads the 1st page (instead of the 2nd page as requested),
+//and the second read reads the 2nd page (instead of the 1st as requested).
+void
+_v2(char *p)
+{
+  int i = PGSIZE + 3*PGSIZE/4;
+  if (p[i] != 0) 
+  {
+    printf("mismatch at 0x%x, wanted zero, got 0x%x\n", i, p[i]);
+    //err("v2 mismatch (2) - check mmapfault");
+  }
+  else
+  {
+    printf("second 0.5 page test passed\n");
+  }
+  i = 3*PGSIZE/4;
+  if (p[i] != 'A') 
+  {
+    printf("mismatch at 0x%x, wanted 'A', got 0x%x\n", i, p[i]);
+    //err("v2 mismatch (1) - check mmapfault");
+  }
+  else
+  {
+    printf("first 1.5 page test passed\n");
+  }
+}
+
 //
 // create a file to be mapped, containing
 // 1.5 pages of 'A' and half a page of zeros.
@@ -75,6 +110,28 @@ makefile(const char *f)
   }
   if (close(fd) == -1)
     err("close");
+}
+
+//Check 2nd page first
+void 
+reverse_test()
+{
+  int fd;
+  const char * const f = "mmap.dur";
+
+  //create file
+  makefile(f);
+
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (1)");
+
+  printf("test reverse mmap read\n");
+  char *p = mmap(0, PGSIZE*2, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (p == MAP_FAILED)
+    err("mmap (1)");
+  _v2(p);
+
+  printf("test reverse mmap read: OK\n");
 }
 
 void
@@ -230,9 +287,6 @@ mmap_test(void)
     err("munmap (4)");
 
   printf("test not-mapped unmap: OK\n");
-
-  //TODO: All tests above completed successfully!
-
   printf("test lazy access\n");
 
   if(unlink(f) != 0) err("unlink");
@@ -341,9 +395,18 @@ fork_test(void)
   if(*(p1+PGSIZE) != 'A')
     err("fork mismatch (1)");
 
+  // if(*(p1) != 'A')
+  //   err("fork mismatch (1)");
+  // else
+  //   printf("Good!\n");
+
+  //TODO: All tests above completed successfully!
+
   if((pid = fork()) < 0)
     err("fork");
   if (pid == 0) {
+    //_v1() triggers mmapfault(), which looks at p->fmap.
+    //So child proc needs to have the same fmap as its parent's.
     _v1(p1);
     if (munmap(p1, PGSIZE) == -1) // just the first page
       err("munmap (7)");

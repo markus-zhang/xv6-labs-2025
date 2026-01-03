@@ -501,7 +501,7 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
     return 0;
   if(off + n > ip->size)
     n = ip->size - off;
-
+  // printf("readi: offset is %d\n", off);
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
     uint addr = bmap(ip, off/BSIZE);
     if(addr == 0)

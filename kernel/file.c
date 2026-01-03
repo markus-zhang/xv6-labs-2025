@@ -112,6 +112,7 @@ int
 fileread(struct file *f, uint64 addr, int n)
 {
   //printf("fileread: f %p, addr 0x%lx, n 0x%x, size 0x%x\n", f, addr, n, f->ip->size);
+  printf("fileread: f %p, offset 0x%x\n", f, f->off);
   int r = 0;
 
   if(f->readable == 0)

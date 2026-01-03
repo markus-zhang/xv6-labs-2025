@@ -304,3 +304,77 @@ I discussed with ChatGPT again because I really don't want to add the dirty bit.
 
 The next objective is to pass fork test. I haven't modified the code for `kfork()` so need to take a look.
 
+### Trial 5
+
+Actually, I found another issue while debugging fork test. It has nothing to do with the fork test specifically, but is a general issue.
+
+The `mmapfault()` code naively calls `fileread()` to load data from file into mmap region when handling a load page fault:
+
+```C
+  int bytesread = fileread(f, baseva, PGSIZE);
+  if (bytesread <= 0)
+    panic("mmapfault: fileread failed!");
+```
+
+`fileread()` actually increments `f->off` (offset for `struct file *f`) for each successful call. This works if the load page faults are "in order":
+- Assuming file is of 2 pages long. Now read the whole 2 pages, so `mmapfault()` gets triggered, `fileread()` the first page of the file into VA, move offset to the beginning of the second page. `mmapfault()` gets triggered again, `fileread()` the second page of the file into VA+PGSIZE. Everything works as expected.
+- Assuming file is of 2 pages long. Now reads the first page, so `mmapfault()` gets triggered, `fileread()` the first page of the file into VA, move offset to the beginning of the second page. Then a second read reads the second page, so `mmapfault()` gets triggered again, etc. Everything works as ^ and is correct.
+
+However, what if the program reads the second page first, and then the first page? In this case, `mmapfault()` gets triggered, but offset is at 0, so `fileread()` still reads the first page, and then move offset to the beginning of the second page. Then `mmapfault()` gets triggered again, and reads the second page. However, this is exactly the opposite order as we wished!
+
+I haven't investigated why this has never caused any issue in the main test, but my theory is, I got away because the on-disk file (created by `makefile()`) is 1.5 pages of 'A', so you can read the 2 pages in any order and still gets the same result -- as long as it doesn't check the whole 2nd page first.
+
+What I'm trying to say is, in `_v1()`, it checks the first 1.5 page, and then a 0.5 page. This is done in order so everything works as expected. However, if it checks the whole 2nd page first -- which means it checks 1) whether the first half page is all 'A', and 2) whether the second half page is all 0, then `mmapfault()` would naively load the first page instead, and we should see an error.
+
+I decided to add a new test and check the ^ theory. I kept the file to be 1.5 pages of 'A'. And I kept the naive logic of `mmapfault()`. `_v2()` tests two indices of the array `p`. The first test checks whether `p[7*PGSIZE/4]` is 0 -- because this is over 1.5 pages (6*PGSIZE/4), it should be 0, not 'A'. The second test checks whether `p[3*PGSIZE/4]` is 'A' -- because this is within 1.5 pages, it should be 'A', not 0. Now, if what I conjectured ^ was correct, both should fail. I also added a bit of code in `fileread()` to print the offset. If what I conjectured ^ was correct, it should print offset 0 for the first load (which is wrong because the test asks for the second page), and offset 0x1000 for the second load (which is again wrong because the test asks for the first page).
+
+```C
+void
+_v2(char *p)
+{
+  int i = PGSIZE + 3*PGSIZE/4;
+  if (p[i] != 0) 
+  {
+    printf("mismatch at 0x%x, wanted zero, got 0x%x\n", i, p[i]);
+  }
+  else
+  {
+    printf("second 0.5 page test passed\n");
+  }
+  i = 3*PGSIZE/4;
+  if (p[i] != 'A') 
+  {
+    printf("mismatch at 0x%x, wanted 'A', got 0x%x\n", i, p[i]);
+  }
+  else
+  {
+    printf("first 1.5 page test passed\n");
+  }
+}
+```
+
+As expected, both tests failed, and printed what I expected. I can also see that the fault hanlder (`mmapfault()`) naively loaded the first page and then proceeded to the second page.
+
+```
+sys_mmap: offset is 0
+sys_mmap: done in slot 0, mmap region starts from 0x0000003bffffe000, len 0x2000
+mmapfault: begin for va 0x0000003bfffffc00
+fileread: f 0x000000008001ff28, offset 0x0
+mmapfault: read 0x1000 bytes
+mismatch at 0x1C00, wanted zero, got 0x41
+mmapfault: begin for va 0x0000003bffffec00
+fileread: f 0x000000008001ff28, offset 0x1000
+mmapfault: read 0x800 bytes
+mismatch at 0xC00, wanted 'A', got 0x0
+test reverse mmap read: OK
+```
+
+BTW this is also mentioned in one of the hints. Unfortunately the original tests never test the mmap in reverse order so I never bothered to read this hint. I try to rely on myself as much as possible. I shall quote the hint:
+
+> Add code to cause a page-fault in a mmap-ed region to allocate a page of physical memory, read 4096 bytes of the relevant file into that page, and map it into the user address space. Read the file with readi, which takes an offset argument at which to read in the file (but you will have to lock/unlock the inode passed to readi). Don't forget to set the permissions correctly on the page. Run mmaptest; it should get to the first munmap. 
+
+On the other hand, judging from my limited Linux programming experience, it is up to the USER program to control the offset, not the kernel side. Kernel doesn't rewind or change offset UNLESS the user program asks it to do so. Otherwise it keeps increments the file offset for each read.
+
+Now I think there is a way for `mmapfault()` to check the requested offset. For each `p->fmap[]` entry, there is a field called `startua`. This is the VA_START of the beginning of the mmap region. Whenever `mmapfault()` is triggered, we always know the VA of the mmap region. So we can find the different between this VA and VA_START to figure out which page the user program is trying to load.
+
+For example, let's say the mmap region is 10 pages long, starting from 0x1000, till 0xB000. If VA is 0x1000, we know it's the first page, if it's 0x4000, we know it's the 4th page, and so on. And then we can move the offset around accordingly.

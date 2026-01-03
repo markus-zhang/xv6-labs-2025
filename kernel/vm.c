@@ -530,7 +530,7 @@ findmmapwithin(struct proc * p, uint64 addr)
 }
 
 //Stage 1 - Assume every fault is a read fault
-//Stage 2 - Start implementing write back
+//Stage 2 - Start implementing write back (in sys_munmap())
 uint64
 mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
 {
@@ -550,7 +550,7 @@ mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read)
   struct proc *p = myproc();
 
   struct file *f = p->fmap[fmapidx].f;
-  DPRINTF("mmapfault: ref of file %lx\n", (uint64)f);
+  // printf("mmapfault: ref of file %lx\n", (uint64)f);
   if (!f)
     panic("mmapfault: file is NULL");
 

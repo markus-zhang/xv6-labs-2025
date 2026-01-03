@@ -555,7 +555,7 @@ sys_mmap(void)
   DPRINTF("sys_mmap: prot is %d\n", prot);
   DPRINTF("sys_mmap: flags is %d\n", flags);
   DPRINTF("sys_mmap: fd is %d\n", fd);
-  DPRINTF("sys_mmap: offset is %d\n", offset);
+  printf("sys_mmap: offset is %d\n", offset);
 
   //Step 2: Lazy allocate len/PGSIZE pages for mmap
   struct proc *p = myproc();
@@ -604,7 +604,10 @@ sys_mmap(void)
   //it should tirgger vmfault(),which calls mmapfault() first
 
   //mmap starts from a specifc region ourside of "ordinary" memory allocation
-  printf("sys_mmap: done, mmap region starts from %p, len 0x%x\n", (void *)fm.startua, fm.len);
+  printf(
+    "sys_mmap: done in slot %d, mmap region starts from %p, len 0x%x\n", 
+    lastfreevma, (void *)fm.startua, fm.len
+  );
   return (char*)fm.startua;
 }
 
@@ -718,6 +721,7 @@ sys_munmap(void)
   //p->fmap[index].f->off = 0;
   if (len >= p->fmap[index].len)
   {
+    // printf("Removing fmap entry %d...\n", index);
     p->fmap[index].f->ref -= 1;
     p->fmap[index].f = 0;
     p->fmap[index].flags = 0;

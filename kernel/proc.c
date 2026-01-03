@@ -280,6 +280,14 @@ kfork(void)
   }
   np->sz = p->sz;
 
+  //mmap: Copy vma to child
+  np->totalvma = p->totalvma;
+  for (int i = 0; i < MAXMMAP; i++)
+  {
+    np->fmap[i] = p->fmap[i];
+    //printf("kfork: file pointer %p\n", np->fmap[i].f);
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 

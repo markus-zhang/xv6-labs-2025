@@ -287,6 +287,18 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 {
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+
+  //free mmap regions (note this is different from backed file size)
+  //chances are sys_munmap() already unmap/free some mmap regions
+  //but not all of them (e.g. mmap without munmap)
+  struct proc *p = myproc();
+  for (int i = 0; i < MAXMMAP; i++)
+  {
+    if (p->fmap[i].f)
+    {
+      uvmunmap(pagetable, p->fmap[i].startua, p->fmap[i].len / PGSIZE, 1);
+    }
+  }
   freewalk(pagetable);
 }
 

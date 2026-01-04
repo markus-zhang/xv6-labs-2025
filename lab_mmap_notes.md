@@ -453,3 +453,33 @@ This is very wrong, because I did not reduce `p->fmap[index].len` for a partial 
   }
 
 ```
+
+Everything works fine except for `kexit()` so the fork test is not done yet. I'm going to think about how to modify `kexit()`. During debugging `kexit()`, I found that
+
+- Some `struct file *f` has an unusually high reference count, e.g. 14. 
+- Also, `uvmfree()` does not free the mmap regions (or whatever leftover at `kexit()`).
+
+Focusing on the `uvmfree()` issue -- `fork_test()` creates two `fmap` entries, entry 0 and entry 1, both of `len` 2 pages. Then the child unmap 1 page for `p1` (entry 0) and then `exit(0)`. So technically neither of the two entries should be removed by the time it exits. This can be confirmed by the subsequent two calls to `_v1()` -- if `p1` and `p2` are unmapped from their PA then these two calls won't be successful ->
+
+So this leaves us a problem -- during `kfork()`, we copied the whole pagetable from parent to child, so that the child proc can use the same mmap mapping -- this is indeed correct and intended. However, when the child proc exits, `kexit()` marks the child proc as "ZOMBIE", and evetually in the parent process's `kwait()` function, it calls `freeproc()` which calls `proc_freepagetable()` which calls `uvmfree()` ->
+
+`uvmfree()` only calls `uvmunmap()` for the UA starting from 0 and grown by calling `growproc()` (i.e. by incrementing `sz`). It completely ignores the mmap region which has not been unmapped by `sys_munmap()` -- which makes sense too because as we discussed the parent proc still needs them.
+
+Let's recap what the fork test wants to test.
+
+- The child proc calls `_v1(p1)` which should succeed. This means the child proc needs to have the same `fmap` setup, because `vmfault()` looks at the current proc (which is the child proc) and tries to figure out the `fmap` index. If the child proc does not have the same `fmap` entries, then this will fail.
+
+- On the other hand, the child proc can `munmap()` as much as it wants, and this does not impact the parent proc so there is no extra work on my side. The reason is that `munmap()` calls `uvmunmap()` which DOES unmap and free the physical memory. But whence the parent proc calls `_v1()` it's going to trigger `mmapfault()` to allocate the physical addresses again and map them to the user land virtual addresses of `p1` and `p2`, so as long as the `fmap` entries are not disturbed, and if `p1` and `p2` arrays are not disturbed, it should be fine.
+
+- The child proc exits and `uvmfree()` should not panic. Still needs to figure out the exact reason. My conjecture ^ is that `sys_munmap()` called by the child proc never got the chance to unmap/free all 4 pages (VA `p1` and `p2` have 2 pages for each), but only 1 of them, so there are 3 pages mapped to 3 pages of physical addresses. `uvmunmap()` does NOT unmap/free THESE 3 pages because they are beyond the "normal" VA region.
+
+
+I realized that I probably need to make two changes:
+
+- In `kfork()`, only copy the entries that are not writable (no writeback). For this test I think I can ignore it because it only calls `mmap()` in a readonly fashion (`PROT_READ`). If it's writable, check out `more_test()` to see what the expectation is. 
+
+- In `kexit()`, `uvunmap()` the mmap region. Or modify `uvmfree()` to do the same thing. Gotta think through this to make sure it doesn't break anything.
+
+### Trial 7
+
+OK now I got pass fork test, let's see what `more_test()` is about.

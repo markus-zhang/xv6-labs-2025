@@ -630,7 +630,6 @@ sys_munmap(void)
 {
   vaddr_t addr = 0;
   int len;
-  int outofrange = 0;
   int writeback = 0;
 
   //Step 1: Read cli arguments
@@ -638,11 +637,9 @@ sys_munmap(void)
   argint(1, &len);
   vaddr_t baseaddr = PGROUNDDOWN(addr);
 
-  if (len % PGSIZE)
-  {
-    DPRINTF("sys_munmap: len not aligned to PGSIZE\n");
-    return -1;
-  }
+  //TODO: len should be aligned to PGSIZE, 
+  //otherwise we have no idea what to do if it's half page
+  ASSERT(len % PGSIZE == 0);
 
   //Step 2: Check which mmap region addr belongs to
   struct proc *p = myproc();
@@ -650,21 +647,18 @@ sys_munmap(void)
   if (index == -1)
   {
     printf("Out of range 0x%lx\n", baseaddr);
-    outofrange = 1;
+    return -1;
   }
 
   //Step 4: Do we need to writeback?
   //Has to have PROT_WRITE as well as MAP_SHARED
   //TODO: Actually f->writable should also be non-zero
-  if (outofrange == 0)
-  {
-    if ((
-      p->fmap[index].prot & PROT_WRITE) && 
-      (p->fmap[index].flags & MAP_SHARED) &&
-      p->fmap[index].f->writable
-    )
-      writeback = 1;
-  }
+  if ((
+    p->fmap[index].prot & PROT_WRITE) && 
+    (p->fmap[index].flags & MAP_SHARED) &&
+    p->fmap[index].f->writable
+  )
+    writeback = 1;
 
   //Step 5: Unmap by calling uvmunmap()
   //NOTE: We have to write back here. We cannot use vmfault(),
@@ -685,6 +679,8 @@ sys_munmap(void)
     //So we need to fetch the size first and write properly.
     // printf("file size: 0x%x\n", f->ip->size);
     int ret = filewriteback(f, baseaddr, f->ip->size);
+    if (ret < 0)
+      panic("sys_munmap: file writeback failed");
     // int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     // int i = 0;
     // int n = p->fmap[index].len;
@@ -712,14 +708,12 @@ sys_munmap(void)
     //   i += r;
     // }
     // ret = (i == n ? n : -1);
-    printf("filewrite: returns 0x%x\n", ret);
+    // printf("filewrite: returns 0x%x\n", ret);
   }
 
   //Unlike writeback, where we are not supposed to over-write,
   //unmap should unmap whatever the caller requests.
   uvmunmap(p->pagetable, baseaddr, npages, 1);
-
-  // printf("sys_munmap: f %p offset is %d\n", p->fmap[index].f, p->fmap[index].f->off);
 
   //We need to track which part of the mmap region is unmapped.
   //And only when the WHOLE region has been unmapped that we reset the entry.
@@ -732,6 +726,7 @@ sys_munmap(void)
   //If we already unmapped the whole mmap region, remove the entry.
   if (newstartua >= endua)
   {
+    printf("sys_munmap: removed fmap entry %d\n", index);
     p->fmap[index].f->ref -= 1;
     p->fmap[index].f = 0;
     p->fmap[index].flags = 0;

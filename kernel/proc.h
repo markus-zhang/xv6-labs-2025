@@ -89,7 +89,8 @@ struct vma
 {
   //File backed VMA
   struct file *f;
-  uint64 startua;
+  vaddr_t startua;
+  vaddr_t originalstartua;
   int len;
   int prot;
   int flags;

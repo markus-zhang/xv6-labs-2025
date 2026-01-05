@@ -588,6 +588,9 @@ sys_mmap(void)
   //NOTE: Each mmap region takes 1 GiB
   //The first starts from MMAPSTART, the second from MMAPSTART + 1 GiB, etc.
   fm.startua = MMAPSTART + lastfreevma * GiB;
+  //Save the original startua for full file writeback,
+  //as startua may change
+  fm.originalstartua = fm.startua;
   fm.len = len;
   fm.prot = prot;
   fm.flags = flags;
@@ -643,7 +646,11 @@ sys_munmap(void)
 
   //Step 2: Check which mmap region addr belongs to
   struct proc *p = myproc();
-  int index = findmmapbase(p, baseaddr);
+  //TODO: This logic is wrong, sometimes we munmap e.g. the second page
+  //munmap(p+PGSIZE, PGSIZE), findmapbase() won't find the correct index
+  //check out more_test() for such requirement
+  // int index = findmmapbase(p, baseaddr);
+  int index = findmmapwithin(p, baseaddr);
   if (index == -1)
   {
     printf("Out of range 0x%lx\n", baseaddr);
@@ -660,11 +667,31 @@ sys_munmap(void)
   )
     writeback = 1;
 
-  //Step 5: Unmap by calling uvmunmap()
+  //What I can confirm from all test programs, are --
+  //1) len, the second argument of munmap(), is always PGSIZE aligned.
+  //2) tests never munmap() a middle page, to break the mmap region into 2.
+  //Point 2) is especially important as it impacts the vma data structure
+  vaddr_t newstartua, endua = 0;
+  if (baseaddr <= p->fmap[index].startua)
+  {
+    //e.g. munmap(p, PGSIZE * 2);
+    //baseaddr should never < startua, but just in case
+    newstartua = p->fmap[index].startua + len;
+    endua = p->fmap[index].startua + p->fmap[index].len;
+  }
+  else
+  {
+    //e.g. munmap(p+PGSIZE, PGSIZE);
+    //assuming munmap() never breaks the region into multiple parts
+    //i.e. it either unmaps some mem in the front, or in the back
+    newstartua = p->fmap[index].startua;
+    endua = baseaddr;
+  }
+
   //NOTE: We have to write back here. We cannot use vmfault(),
   //because s_cause() = 15 is not triggered by mmap.
-  //Also this is more efficient because we writeback when the memory is ready to go.
-  uint64 npages = len / PGSIZE;
+  //We save the original startua, and write back the whole file.
+  
   if (writeback)
   {
     struct file *f = p->fmap[index].f;
@@ -676,9 +703,10 @@ sys_munmap(void)
     //So we need to reset it to 0 once we decide to write back.
     f->off = 0;
     //NOTE: `filewrite()` is not supposed to increment file size.
-    //So we need to fetch the size first and write properly.
+    //So we need to fetch the size and write back the whole file.
     // printf("file size: 0x%x\n", f->ip->size);
-    int ret = filewriteback(f, baseaddr, f->ip->size);
+    // int ret = filewriteback(f, baseaddr, f->ip->size);
+    int ret = filewriteback(f, p->fmap[index].originalstartua, f->ip->size);
     if (ret < 0)
       panic("sys_munmap: file writeback failed");
     // int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
@@ -711,8 +739,10 @@ sys_munmap(void)
     // printf("filewrite: returns 0x%x\n", ret);
   }
 
+  //Step 5: Unmap by calling uvmunmap()
   //Unlike writeback, where we are not supposed to over-write,
   //unmap should unmap whatever the caller requests.
+  uint64 npages = len / PGSIZE;
   uvmunmap(p->pagetable, baseaddr, npages, 1);
 
   //We need to track which part of the mmap region is unmapped.
@@ -721,8 +751,7 @@ sys_munmap(void)
   //The first call unmaps 1 page (the first page).
   //Should I increment startua by 1 page as well? 
   //The second call unmaps 2 pages. Only by now I remove the entry.
-  vaddr_t newstartua = p->fmap[index].startua + len;
-  vaddr_t endua = p->fmap[index].startua + p->fmap[index].len;
+
   //If we already unmapped the whole mmap region, remove the entry.
   if (newstartua >= endua)
   {

@@ -482,4 +482,133 @@ I realized that I probably need to make two changes:
 
 ### Trial 7
 
-OK now I got pass fork test, let's see what `more_test()` is about.
+OK now I got pass fork test, let's see what `more_test()` is about. This time I'm going to comment the whole test and try to figure out the specification.
+
+```C
+void
+more_test()
+{
+  int fd, pid;
+  char *p;
+  const char * const f = "mmap.dur";
+  
+  printf("test munmap prevents access\n");
+  
+  //Make a file of 1.5 pages
+  makefile(f);
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open");
+  //mmap 2 pages, need to writeback when unmapped
+  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (p == MAP_FAILED)
+    err("mmap");
+  close(fd);
+
+  //These two modifications need to be written back when unmapped
+  //vmfault() is called for both pages for the parent proc pagetable
+  *p = 'X';
+  *(p+PGSIZE) = 'Y';
+
+  pid = fork();
+  if(pid < 0) err("fork");
+  //child proc 1
+  if(pid == 0){
+    //vmfault() is called for the both pages for child proc 1 pagetable
+    //as the PAs are not mapped to child proc 1 PA yet.
+    *p = 'a';
+    *(p+PGSIZE) = 'b';
+    //unmap the second page for child proc 1
+    //This determines how should munmap() change mmap region startua and len
+    if(munmap(p+PGSIZE, PGSIZE) == -1)
+      err("munmap");
+    // this should cause a fatal fault
+    //NOTE: Why? Because the previous munmap() already removes the mapping
+    //and frees the physical memory. This address should not exist in the vma.
+    //If the kernel programmer does not implement munmap() correctly(),
+    //and this address is still in one of the vma entries,
+    //vmfault() will happily call mmapvault() to map and allocate again.
+    printf("*(p+PGSIZE) = %x\n", *(p+PGSIZE));
+    exit(0);
+  }
+  int st = 0;
+  wait(&st);
+  if(st != -1)
+    err("child #1 read unmapped memory");
+
+  pid = fork();
+  if(pid < 0) err("fork");
+  //child proc 2, same story but with the first page unmapped in munmap()
+  if(pid == 0){
+    *p = 'c';
+    *(p+PGSIZE) = 'd';
+    if(munmap(p, PGSIZE) == -1)
+      err("munmap");
+    // this should cause a fatal fault
+    printf("*p = %x\n", *p);
+    exit(0);
+  }
+  st = 0;
+  wait(&st);
+  if(st != -1)
+    err("child #2 read unmapped memory");
+
+  // parent should still be able to access the memory.
+  //NOTE: for the parent proc, the two pages were mapped and allocated ^.
+  //And we didn't touch the vma entries of the parent proc,
+  //so these two lines should still work.
+  *p = 'P';
+  *(p+PGSIZE) = 'Q';
+
+  //munmap() should write back changes for the first page,
+  //because mmap() has parameters: PROT_READ | PROT_WRITE, MAP_SHARED
+  if(munmap(p, PGSIZE) == -1)
+    err("munmap");
+
+  *(p+PGSIZE) = 'R';
+  //Same, should write back the second page (just the first half page)
+  if(munmap(p+PGSIZE, PGSIZE) == -1)
+    err("munmap");
+
+  // read the file, check that the first page starts
+  // with P and the second page with R.
+  fd = open(f, O_RDONLY);
+  if(fd < 0) err("open");
+  if(read(fd, buf, PGSIZE) != PGSIZE) err("read");
+  if(buf[0] != 'P') err("first byte of file is wrong");
+  if(read(fd, buf, PGSIZE) != PGSIZE/2) err("read");
+  if(buf[0] != 'R') err("first byte of 2nd page of file is wrong");
+  close(fd);
+
+  printf("test munmap prevents access: OK\n");
+
+  printf("test writes to read-only mapped memory\n");
+
+  makefile(f);
+
+  pid = fork();
+  if(pid < 0) err("fork");
+  if(pid == 0){
+    if ((fd = open(f, O_RDWR)) == -1)
+      err("open");
+    p = mmap(0, PGSIZE*2, PROT_READ, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED)
+      err("mmap");
+    // this should cause a fatal fault
+    //NOTE: This checks whether the child proc copies the PROT/FLAGS correctly
+    //This also checks whether we use the PROT/FLAGS to trigger a fatal fault.
+    //I need to think about how to achieve that.
+    *p = 0;
+    exit(*p);
+  }
+
+  st = 0;
+  wait(&st);
+  if(st != -1)
+    err("child wrote read-only mapping");
+
+  printf("test writes to read-only mapped memory: OK\n");
+}
+
+```
+
+OK eventually I made all the modifications to pass this test. But I got a regression bug: `freewalk()` panics again.

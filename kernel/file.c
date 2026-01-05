@@ -230,7 +230,7 @@ filewriteback(struct file *f, uint64 addr, int n)
       end_op();
 
       if(r != n1){
-        // error from writei
+        // error from writebacki
         printf("filewriteback: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
         break;
       }

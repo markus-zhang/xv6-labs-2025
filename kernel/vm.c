@@ -9,6 +9,7 @@
 #include "fs.h"
 #include "sleeplock.h"
 #include "file.h"
+#include "fcntl.h"
 #include "debug.h"
 
 /*
@@ -296,7 +297,9 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   {
     if (p->fmap[i].f)
     {
-      uvmunmap(pagetable, p->fmap[i].startua, p->fmap[i].len / PGSIZE, 1);
+      //Use originalstartua as startua moves around
+      //Also don't use len as it moves around too...
+      uvmunmap(pagetable, p->fmap[i].originalstartua, p->fmap[i].len / PGSIZE, 1);
     }
   }
   freewalk(pagetable);
@@ -557,12 +560,18 @@ mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
   //technically a boolean
   ASSERT((read == 0) || (read == 1));
 
-  // printf("mmapfault: begin for va %p\n", (void *)va);
+  //printf("mmapfault: scause is %ld\n", r_scause());
   //For read fault, should load file into va
   //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
   //va = 0x5400, then the page starts from 0x5000 to 0x6000
   vaddr_t baseva = PGROUNDDOWN(va);
   struct proc *p = myproc();
+
+  //if mapped as RO but scause is 15, return 0,
+  //to trigger a fatal trap in usertrap()
+  if (r_scause() == 15)
+    if ((p->fmap[fmapidx].prot & PROT_WRITE) == 0)
+      return 0;
 
   struct file *f = p->fmap[fmapidx].f;
   // printf("mmapfault: ref of file %lx\n", (uint64)f);

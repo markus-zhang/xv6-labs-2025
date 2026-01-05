@@ -616,3 +616,40 @@ OK eventually I made all the modifications to pass this test. But I got a regres
 I found out that I never properly `uvmfree()` the child proc in "fork test". Let me explain. I did modify `unvmfree()` to look at the pagetable and then release memory, but here is the twist: `uvmfree()` is called by the parent proc (during `kwait()`) on all of its child procs, so eh, `uvmfree()` is actually freeing the parent proc, not the child proc.
 
 I think a better solution is to move the mmap region free code to `kexit()`. Gotta take a break and take a look tomorrow.
+
+
+### Final grade
+
+```
+$ make qemu-gdb
+(6.3s) 
+== Test   mmaptest: mmap basic == 
+  mmaptest: mmap basic: OK 
+== Test   mmaptest: mmap private == 
+  mmaptest: mmap private: OK 
+== Test   mmaptest: mmap read-only == 
+  mmaptest: mmap read-only: OK 
+== Test   mmaptest: mmap read/write == 
+  mmaptest: mmap read/write: OK 
+== Test   mmaptest: mmap dirty == 
+  mmaptest: mmap dirty: OK 
+== Test   mmaptest: not-mapped unmap == 
+  mmaptest: not-mapped unmap: OK 
+== Test   mmaptest: lazy access == 
+  mmaptest: lazy access: OK 
+== Test   mmaptest: two files == 
+  mmaptest: two files: OK 
+== Test   mmaptest: fork_test == 
+  mmaptest: fork_test: OK 
+== Test   mmaptest: munmap_noaccess == 
+  mmaptest: munmap_noaccess: OK 
+== Test   mmaptest: read_only_write == 
+  mmaptest: read_only_write: OK 
+== Test usertests == 
+$ make qemu-gdb
+usertests: OK (128.7s) 
+== Test time == 
+time: FAIL 
+    Cannot read time.txt
+Score: 169/170
+```

@@ -177,10 +177,6 @@ filewrite(struct file *f, uint64 addr, int n)
 
       if(r != n1){
         // error from writei
-        printf(
-          "filewrite: error from writei. addr is 0x%lx, r is 0x%x, n1 is 0x%x, max is 0x%x\n", 
-          addr, r, n1, max
-        );
         break;
       }
       i += r;
@@ -234,7 +230,7 @@ filewriteback(struct file *f, uint64 addr, int n)
 
       if(r != n1){
         // error from writebacki
-        printf("filewriteback: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
+        // printf("filewriteback: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
         break;
       }
       i += r;

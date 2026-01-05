@@ -608,7 +608,7 @@ sys_mmap(void)
   //it should tirgger vmfault(),which calls mmapfault() first
 
   //mmap starts from a specifc region ourside of "ordinary" memory allocation
-  printf(
+  DPRINTF(
     "sys_mmap: done in slot %d, mmap region starts from %p, len 0x%x\n", 
     lastfreevma, (void *)fm.startua, fm.len
   );
@@ -755,7 +755,7 @@ sys_munmap(void)
   //If we already unmapped the whole mmap region, remove the entry.
   if (newstartua >= endua)
   {
-    printf("sys_munmap: removed fmap entry %d\n", index);
+    DPRINTF("sys_munmap: removed fmap entry %d\n", index);
     p->fmap[index].f->ref -= 1;
     p->fmap[index].f = 0;
     p->fmap[index].flags = 0;
@@ -773,7 +773,8 @@ sys_munmap(void)
 
   //We don't need to reduce f->ref because fileclose does that.
 
-  printf("sys_munmap: release 0x%x bytes at addr %p\n", len, (void *)baseaddr);
+  DPRINTF("sys_munmap: release 0x%x bytes at addr %p\n", len, (void *)baseaddr);
+  DPRINTF("fmap[%d]: startua 0x%lx with len 0x%x\n", index, newstartua, p->fmap[index].len);
 
   return 0;
 }

@@ -70,6 +70,9 @@ copyin(char *s)
     close(fds[0]);
     close(fds[1]);
   }
+
+  //Debug
+  exit(0);
 }
 
 // what if you pass ridiculous pointers to system calls

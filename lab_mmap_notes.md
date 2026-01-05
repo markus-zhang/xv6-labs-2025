@@ -612,3 +612,7 @@ more_test()
 ```
 
 OK eventually I made all the modifications to pass this test. But I got a regression bug: `freewalk()` panics again.
+
+I found out that I never properly `uvmfree()` the child proc in "fork test". Let me explain. I did modify `unvmfree()` to look at the pagetable and then release memory, but here is the twist: `uvmfree()` is called by the parent proc (during `kwait()`) on all of its child procs, so eh, `uvmfree()` is actually freeing the parent proc, not the child proc.
+
+I think a better solution is to move the mmap region free code to `kexit()`. Gotta take a break and take a look tomorrow.

@@ -399,8 +399,6 @@ fork_test(void)
   // else
   //   printf("Good!\n");
 
-  //TODO: All tests above completed successfully!
-
   if((pid = fork()) < 0)
     err("fork");
   if (pid == 0) {
@@ -409,6 +407,7 @@ fork_test(void)
     _v1(p1);
     if (munmap(p1, PGSIZE) == -1) // just the first page
       err("munmap (7)");
+    printf("pid: %d\n", getpid());
     exit(0); // tell the parent that the mapping looks OK.
   }
 

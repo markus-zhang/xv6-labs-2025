@@ -84,7 +84,6 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 //mmap:
 //We probably don't need fd as it is closed after mmap
 //We need the path so that same file goes into same fdmap
-//TODO: What happens if the file content changes? Need to remap?
 struct vma
 {
   //File backed VMA

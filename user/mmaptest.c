@@ -11,6 +11,7 @@ void mmap_test();
 void fork_test();
 void more_test();
 void reverse_test();
+void write_test();
 char buf[PGSIZE];
 
 #define MAP_FAILED ((char *) -1)
@@ -19,7 +20,7 @@ int
 main(int argc, char *argv[])
 {
   //My own test
-  // reverse_test();
+  // write_test();
   // exit(0);
 
   mmap_test();
@@ -132,6 +133,28 @@ reverse_test()
   _v2(p);
 
   printf("test reverse mmap read: OK\n");
+}
+
+//
+void
+write_test()
+{
+  int fd;
+  const char * const f = "mmap.dur";
+
+  //create file
+  makefile(f);
+
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (1)");
+  
+  char *p = mmap(0, PGSIZE*2, PROT_READ, MAP_PRIVATE, fd, 0);
+
+  printf("write before read\n");
+  //This should trigger usertrap() fatal fault 
+  //because mmapfault() prevents writing into RO mmap region
+  for (int i = 0; i < PGSIZE*2; i++)
+    p[i] = 'Z';
 }
 
 void

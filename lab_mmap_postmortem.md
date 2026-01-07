@@ -609,7 +609,6 @@ sys_munmap(void)
 {
   vaddr_t addr = 0;
   int len;
-  int writeback = 0;
 
   //Step 1: Read cli arguments
   argaddr(0, &addr);
@@ -645,24 +644,47 @@ sys_munmap(void)
 }
 ```
 
+Proceed by running `make qemu` and we see that our "implementation" passes the first test:
+
+```bash
+$ mmaptest
+test basic mmap
+test basic mmap: OK
+test mmap private
+panic: fileclose
+```
+
+#### Test 1.2 - test mmap private
 
 ```C
 
   printf("test mmap private\n");
 
+  //mmap 2 pages. Note that the file is only 1.5 pages. This means we can over-mmap.
   p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
   if (p == MAP_FAILED)
     err("mmap (2)");
+  //close(fd) should not panic as shown in the ^ log.
+  //This means mmap() should increment f->ref, otherwise f->ref is 0 and fileclose() panics.
+  //Note that close(fd) always puts p->ofile[fd] to 0. This makes the next call of close(fd) returns -1.
   if (close(fd) == -1)
     err("close (1)");
+  //p is mmaped, but never allocated/mapped, so _v1(p) triggers vmfault() with scause=13 (load page fault)
   _v1(p);
   for (i = 0; i < PGSIZE*2; i++)
     p[i] = 'Z';
   if (munmap(p, PGSIZE*2) == -1)
     err("munmap (2)");
+  //Since fd was already closed ^, this close(fd) should return -1, 
+  //as argfd() call is not able to locate ofile[fd], i.e. f=myproc()->ofile[fd]) == 0.
+  //This is probably why it is not tested against -1.
+  //
+  //Additional note: if you track f->ref till this line, it should be 0,
+  //which means if somehow sys_close() manages to run fileclose(), it panics.
   close(fd);
 
-  // file should not have been modified.
+  // file should not have been modified, because mmap region is MAP_PRIVATE.
+  //The rest of the test simply checks whether the file has been modified.
   if((fd = open(f, O_RDONLY)) < 0) err("open");
   if(read(fd, buf, PGSIZE) != PGSIZE) err("read");
   if(buf[0] != 'A')
@@ -673,12 +695,92 @@ sys_munmap(void)
   close(fd);
 
   printf("test mmap private: OK\n");
+```
 
-  //NOTE: Test 2 - mmap 2 pages: PROT = RW, FLAGS = MAP_PRIVATE
-  //_v1(p) then reads 2 pages -> expected behavior: reads without issue
-  //Then writes 'Z' to 2 pages, and munmap(), close(fd)
-  //The expected behavior is that the file should NOT be overwritten with 'Z'
-  //because FLAGS = MAP_PRIVATE
+Test 1.2 calls `_v1(p)`, which reads bytes from the mmap region. Recall that we never kalloc()/mappages() in mmap(), i.e. we simply lazily mmap 2 pages of file to `p` by TELLING the kernel -- technically, by inserting a new entry into `p->fmap[]`. The CPU then calls `usertrap()` (because `mmaptest.c` is a user land program, and because the xv6 kernel puts the address of `usertrap()` into `stvec` when running user code) with `scause` as 13 (because this is a LOAD PAGE FAULT). `usertrap()` then calls `vmfault()`, but there is no code to deal with this situation in `vmfault()`, so this leaves us to implement the functionality.
+
+What I did (perhaps not the cleanest option, from hindsight) is to make a new kernel function in `vm.c` -- `mmapfault()`, and takes over from `vmfault()` if the address is within the range of a fmap entry.
+
+```C
+//vm.c, in vmfault(), under struct proc *p = myproc();
+
+  //mmap: check if va is part of mmap addr.
+  //findmapwithin() is to be implemented shortly.
+  int index = findmmapwithin(p, va);
+  if (index >= 0)
+    return mmapfault(pagetable, va, index, read);
+
+//vm.c, add a new function at the end.
+//Grab the index of the element of p->fmap array that CONTAINS addr
+int 
+findmmapwithin(struct proc * p, vaddr_t addr)
+{
+  int i = 0;
+  for (; i < MAXMMAP; i++)
+  {
+    vaddr_t startua = p->fmap[i].startua;
+    vaddr_t endua = p->fmap[i].startua + p->fmap[i].len;
+    if ((addr >= startua) && (addr < endua))
+      return i;
+  }
+  return -1;
+}
+
+//vm.c, add a new function at the end.
+//vaddr_t and paddr_t are both uint64.
+uint64
+mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
+{
+  //For read fault, should load file into va
+  //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
+  //va = 0x5400, then the page starts from 0x5000 to 0x6000
+  vaddr_t baseva = PGROUNDDOWN(va);
+  struct proc *p = myproc();
+
+  struct file *f = p->fmap[fmapidx].f;
+  if (!f)
+    panic("mmapfault: file is NULL");
+
+  paddr_t mem = (uint64)kalloc();
+  if (mem == 0)
+    return 0;
+  memset((void *)mem, 0, PGSIZE);
+  //I think we have to enable PTE_W even for readonly mmap regions
+  //becuase we need to write into it for mmap.
+  //RO/RW should be implemented by looking at prot and flags.
+  //Please note that dirty bit is not implemented throughout this lab.
+  if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
+  {
+    kfree((void *)mem);
+    return 0;
+  }
+
+  //For now we simply slap on a fileread() which works for this specific test.
+  //We will see in the near future that this no longer works when the tests become more sophiscated.
+  int bytesread = fileread(f, baseva, PGSIZE);
+  if (bytesread <= 0)
+    panic("mmapfault: fileread failed!");
+
+  return mem;
+}
+
+```
+
+Once the above code has been added, you should see the following printed message after running `mmaptest` again:
+
+```
+$ mmaptest
+test basic mmap
+test basic mmap: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+mmaptest failure: mmap (3), pid=3
+```
+
+#### Test 1.3 - test mmap read-only
+
+```C
 
   printf("test mmap read-only\n");
 
@@ -693,6 +795,9 @@ sys_munmap(void)
     err("close (2)");
 
   printf("test mmap read-only: OK\n");
+```
+
+```C
 
   //NOTE: Test 3 - mmap 2 pages: PROT = RW, FLAGS = MAP_SHARED
   //But the file is opened as RO. 

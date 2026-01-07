@@ -170,6 +170,7 @@ mmap_test(void)
   // file.
   //
   makefile(f);
+  //Each open() sets f->ref to 1.
   if ((fd = open(f, O_RDONLY)) == -1)
     err("open (1)");
 

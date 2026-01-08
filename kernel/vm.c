@@ -536,72 +536,72 @@ findmmapwithin(struct proc * p, vaddr_t addr)
 //Stage 1 - Assume every fault is a read fault
 //Stage 2 - Start implementing write back (in sys_munmap())
 //va is always userland virtual address
-// uint64
-// mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
-// {
-//   // printf("mmapfault: r_scause() is %ld\n", r_scause());
-//   ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
-//   ASSERT(pagetable != 0);
-//   //mmap region always lower than TRAMPOLINE
-//   ASSERT(va < TRAMPOLINE);
-//   //technically a boolean
-//   ASSERT((read == 0) || (read == 1));
+uint64
+mmapfault2(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
+{
+  // printf("mmapfault: r_scause() is %ld\n", r_scause());
+  ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
+  ASSERT(pagetable != 0);
+  //mmap region always lower than TRAMPOLINE
+  ASSERT(va < TRAMPOLINE);
+  //technically a boolean
+  ASSERT((read == 0) || (read == 1));
 
-//   //printf("mmapfault: scause is %ld\n", r_scause());
-//   //For read fault, should load file into va
-//   //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
-//   //va = 0x5400, then the page starts from 0x5000 to 0x6000
-//   vaddr_t baseva = PGROUNDDOWN(va);
-//   struct proc *p = myproc();
+  //printf("mmapfault: scause is %ld\n", r_scause());
+  //For read fault, should load file into va
+  //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
+  //va = 0x5400, then the page starts from 0x5000 to 0x6000
+  vaddr_t baseva = PGROUNDDOWN(va);
+  struct proc *p = myproc();
 
-//   //if file opened as RO but scause is 15, return 0,
-//   //to trigger a fatal trap in usertrap()
-//   if (r_scause() == 15)
-//     if ((p->fmap[fmapidx].prot & PROT_WRITE) == 0)
-//       return 0;
+  //if file opened as RO but scause is 15, return 0,
+  //to trigger a fatal trap in usertrap()
+  if (r_scause() == 15)
+    if ((p->fmap[fmapidx].prot & PROT_WRITE) == 0)
+      return 0;
 
-//   struct file *f = p->fmap[fmapidx].f;
-//   // printf("mmapfault: ref of file %lx\n", (uint64)f);
-//   if (!f)
-//     panic("mmapfault: file is NULL");
+  struct file *f = p->fmap[fmapidx].f;
+  // printf("mmapfault: ref of file %lx\n", (uint64)f);
+  if (!f)
+    panic("mmapfault: file is NULL");
 
-//   //Fetch file size -> # of pages to map
-//   //For size = 0x1800 bytes, should load 2 pages, not 1
-//   // int filesz = f->ip->size;
-//   // int filepages = filesz / PGSIZE;
-//   // if (filesz % PGSIZE != 0)
-//   //   filepages += 1;
+  //Fetch file size -> # of pages to map
+  //For size = 0x1800 bytes, should load 2 pages, not 1
+  // int filesz = f->ip->size;
+  // int filepages = filesz / PGSIZE;
+  // if (filesz % PGSIZE != 0)
+  //   filepages += 1;
 
-//   paddr_t mem = (uint64)kalloc();
-//   if (mem == 0)
-//     return 0;
-//   memset((void *)mem, 0, PGSIZE);
-//   //I think we have to enable PTE_W even for readonly mmap regions
-//   //becuase we need to write into it for mmap.
-//   //RO/RW should be implemented by looking at p->fmap.addr.prot
-//   if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
-//   {
-//     kfree((void *)mem);
-//     return 0;
-//   }
+  paddr_t mem = (uint64)kalloc();
+  if (mem == 0)
+    return 0;
+  memset((void *)mem, 0, PGSIZE);
+  //I think we have to enable PTE_W even for readonly mmap regions
+  //becuase we need to write into it for mmap.
+  //RO/RW should be implemented by looking at p->fmap.addr.prot
+  if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
+  {
+    kfree((void *)mem);
+    return 0;
+  }
 
-//   //Similar to fileread() but with an offset.
-//   //What if user program does NOT read in order? Read Trial 5 in lab note.
-//   //We should be able to get base va addr from fmap
-//   vaddr_t basefmava = p->fmap[fmapidx].startua;
-//   int vaoff = baseva - basefmava;
-//   //Can't use fileread() directly because it doesn't have an argument for offset
-//   ilock(f->ip);
-//   int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
-//   //Do not increment the offset as in fileread(),
-//   //because offset = diff between startua and baseva
-//   iunlock(f->ip);
-//   if (bytesread <= 0)
-//     panic("mmapfault: fileread failed!");
+  //Similar to fileread() but with an offset.
+  //What if user program does NOT read in order? Read Trial 5 in lab note.
+  //We should be able to get base va addr from fmap
+  vaddr_t basefmava = p->fmap[fmapidx].startua;
+  int vaoff = baseva - basefmava;
+  //Can't use fileread() directly because it doesn't have an argument for offset
+  ilock(f->ip);
+  int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+  //Do not increment the offset as in fileread(),
+  //because offset = diff between startua and baseva
+  iunlock(f->ip);
+  if (bytesread <= 0)
+    panic("mmapfault: fileread failed!");
 
-//   // printf("mmapfault: read 0x%x bytes\n", bytesread);
-//   return mem;
-// }
+  // printf("mmapfault: read 0x%x bytes\n", bytesread);
+  return mem;
+}
 
 uint64
 mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)

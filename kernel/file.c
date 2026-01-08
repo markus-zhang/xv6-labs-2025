@@ -169,7 +169,6 @@ filewrite(struct file *f, uint64 addr, int n)
       ilock(f->ip);
       if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
       {
-        // printf("filewrite: offset is 0x%x\n", f->off);
         f->off += r;
       }
       iunlock(f->ip);

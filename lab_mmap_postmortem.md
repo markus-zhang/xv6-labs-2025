@@ -10,470 +10,6 @@ It is from my experience working on the labs that I learned that kernel programm
 - Figuring out specification for `mmap` and `munmap`
 - Writing the implementation
 
-### Requirement analysis
-
-Since we don't have a written specification for `mmap` and `munmap`, we need to read through and understand the tests to figure that out. I'll jot down as much comment as possible for the three tests.
-
-Such comment focuses on extracting what the tests test for (thus the requirements), what they expect, and what the failing message should be. These comments are prefixed by "NOTE", to differentiate from the "official" comments.
-
-```C
-void
-mmap_test(void)
-{
-  int fd;
-  int i;
-  const char * const f = "mmap.dur";
-
-  //
-  // create a file with known content, map it into memory, check that
-  // the mapped memory has the same bytes as originally written to the
-  // file.
-  //
-  makefile(f);
-  if ((fd = open(f, O_RDONLY)) == -1)
-    err("open (1)");
-
-  printf("test basic mmap\n");
-
-  char *p = mmap(0, PGSIZE*2, PROT_READ, MAP_PRIVATE, fd, 0);
-  if (p == MAP_FAILED)
-    err("mmap (1)");
-  _v1(p);
-  if (munmap(p, PGSIZE*2) == -1)
-    err("munmap (1)");
-
-  printf("test basic mmap: OK\n");
-
-  //NOTE: Test 1 - mmap 2 pages: PROT = RO, FLAGS = MAP_PRIVATE
-  //_v1() then reads 2 pages -> expected behavior: reads without issue
-  //munmap() then unmaps the 2 pages
-
-  printf("test mmap private\n");
-
-  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-  if (p == MAP_FAILED)
-    err("mmap (2)");
-  if (close(fd) == -1)
-    err("close (1)");
-  _v1(p);
-  for (i = 0; i < PGSIZE*2; i++)
-    p[i] = 'Z';
-  if (munmap(p, PGSIZE*2) == -1)
-    err("munmap (2)");
-  close(fd);
-
-  // file should not have been modified.
-  if((fd = open(f, O_RDONLY)) < 0) err("open");
-  if(read(fd, buf, PGSIZE) != PGSIZE) err("read");
-  if(buf[0] != 'A')
-    err("write to MAP_PRIVATE was written to file");
-  if(read(fd, buf, PGSIZE) != PGSIZE/2) err("read");
-  if(buf[0] != 'A')
-    err("write to MAP_PRIVATE was written to file");
-  close(fd);
-
-  printf("test mmap private: OK\n");
-
-  //NOTE: Test 2 - mmap 2 pages: PROT = RW, FLAGS = MAP_PRIVATE
-  //_v1(p) then reads 2 pages -> expected behavior: reads without issue
-  //Then writes 'Z' to 2 pages, and munmap(), close(fd)
-  //The expected behavior is that the file should NOT be overwritten with 'Z'
-  //because FLAGS = MAP_PRIVATE
-
-  printf("test mmap read-only\n");
-
-  // check that mmap doesn't allow read/write mapping of a
-  // file opened read-only.
-  if ((fd = open(f, O_RDONLY)) == -1)
-    err("open (2)");
-  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (p != MAP_FAILED)
-    err("mmap (3)");
-  if (close(fd) == -1)
-    err("close (2)");
-
-  printf("test mmap read-only: OK\n");
-
-  //NOTE: Test 3 - mmap 2 pages: PROT = RW, FLAGS = MAP_SHARED
-  //But the file is opened as RO. 
-  //So the expected behavior is that mmap() should return -1
-
-  printf("test mmap read/write\n");
-
-  // check that mmap does allow read/write mapping of a
-  // file opened read/write.
-  if ((fd = open(f, O_RDWR)) == -1)
-    err("open (3)");
-  p = mmap(0, PGSIZE*3, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (p == MAP_FAILED)
-    err("mmap (4)");
-  if (close(fd) == -1)
-    err("close (3)");
-
-  // check that the mapping still works after close(fd).
-  _v1(p);
-
-  // write the mapped memory.
-  for (i = 0; i < PGSIZE; i++)
-    p[i] = 'B';
-  for (i = PGSIZE; i < PGSIZE*2; i++)
-    p[i] = 'C';
-
-  // unmap just the first two of three pages of mapped memory.
-  if (munmap(p, PGSIZE*2) == -1)
-    err("munmap (3)");
-
-  printf("test mmap read/write: OK\n");
-
-  printf("test mmap dirty\n");
-
-  // check that the writes to the mapped memory were
-  // written to the file.
-  if ((fd = open(f, O_RDONLY)) == -1)
-    err("open (4)");
-  int temp = read(fd, buf, PGSIZE);
-  if(temp != PGSIZE)
-    err("dirty read #1");
-  for (i = 0; i < PGSIZE; i++){
-    if (buf[i] != 'B')
-      err("file page 0 does not contain modifications");
-  }
-  temp = read(fd, buf, PGSIZE);
-  if(temp != PGSIZE/2)
-  {
-    printf("mmaptest: read returns 0x%x\n", temp);
-    err("dirty read #2");
-  }
-  for (i = 0; i < PGSIZE/2; i++){
-    if (buf[i] != 'C')
-      err("file page 1 does not contain modifications");
-  }
-  if (close(fd) == -1)
-    err("close (4)");
-
-  printf("test mmap dirty: OK\n");
-
-  //NOTE: Test 4 - mmap 3 pages: PROT = RW, FLAGS = MAP_SHARED
-  //Then close(fd). Then _v1(p) reads the first 2 pages.
-  //Then write 'B' to the first page, and 'C' into the second page.
-  //Then munmap() the first 2 pages.
-  //Then read() and checks whether the first page is all 'B'.
-  //Note that read() retains the offset, so the second read() actually starts from the beginning of the 2nd page,
-  //which read just 0.5 pages.
-  //Then continue read() and checks whether the first half of the second page is all 'C'
-  //Then close(fd)
-  //This is one of the more difficult tests, and we can summarize the expectations as:
-  //1) If PROT=RW, FLAGS=MAP_SHARED, we should write back any changes made to the mmap region.
-  //2) However, we should never "extend" the file in write back.
-  //You can see that the program checks whether the first read() reads 1 page and the second reads 0.5 pages.
-  //If we extend the file, then the second read() is going to read a full 1 page.
-  //(The lab hints note that we can always write back the full file without worrying about the dirty bit)
-
-  printf("test not-mapped unmap\n");
-
-  // unmap the rest of the mapped memory.
-  if (munmap(p+PGSIZE*2, PGSIZE) == -1)
-    err("munmap (4)");
-
-  printf("test not-mapped unmap: OK\n");
-
-  //NOTE: Test 5 - munmap() the 3rd page (recall that we mmap 3 pages ^?)
-  //Not much to say here. The expected result is that we should be able to
-  //munmap() any region mapped by mmap()
-
-  printf("test lazy access\n");
-
-  if(unlink(f) != 0) err("unlink");
-  makefile(f);
-
-  if ((fd = open(f, O_RDWR)) == -1)
-    err("open");
-  p = mmap(0, PGSIZE*2, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-  if (p == MAP_FAILED)
-    err("mmap");
-  close(fd);
-
-  // mmap() should not have read the file at this point,
-  // so that the file modification we're about to make
-  // ought to be visible to a subsequent read of the
-  // mapped memory.
-
-  if((fd = open(f, O_RDWR)) == -1)
-    err("open");
-  if(write(fd, "m", 1) != 1)
-    err("write");
-  close(fd);
-
-  //Immediately traps into vmfault() because p is lazily allocated
-  if(*p != 'm')
-    err("read was not lazy");
-
-  if(munmap(p, PGSIZE*2) == -1)
-    err("munmap");
-
-  printf("test lazy access: OK\n");
-
-  //NOTE: Test 6 - The program makes the file anew.
-  //Then it mmap() 2 pages: PROT = RW, FLAGS = MAP_SHARED
-  //Then close(fd).
-  //Then write() 'm' (just 1 byte) into the file.
-  //Then reads from *p and checks whether it is 'm'.
-  //Then munmap() the 2 pages.
-  //The expectation is: mmap() should never pre-load the file into the mapped pages.
-  //Instead, the kernel relies on fault handlers to load the file once needed.
-  //The code that triggers the handler is if(*p != 'm').
-
-  printf("test mmap two files\n");
-
-  //
-  // mmap two different files at the same time.
-  //
-  int fd1;
-  if((fd1 = open("mmap1", O_RDWR|O_CREATE)) < 0)
-    err("open (5)");
-  if(write(fd1, "12345", 5) != 5)
-    err("write (1)");
-  char *p1 = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd1, 0);
-  if(p1 == MAP_FAILED)
-    err("mmap (5)");
-  if (close(fd1) == -1)
-    err("close (5)");
-  if (unlink("mmap1") == -1)
-    err("unlink (1)");
-
-  int fd2;
-  if((fd2 = open("mmap2", O_RDWR|O_CREATE)) < 0)
-    err("open (6)");
-  if(write(fd2, "67890", 5) != 5)
-    err("write (2)");
-  char *p2 = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd2, 0);
-  if(p2 == MAP_FAILED)
-    err("mmap (6)");
-  if (close(fd2) == -1)
-    err("close (6)");
-  if (unlink("mmap2") == -1)
-    err("unlink (2)");
-
-  if(memcmp(p1, "12345", 5) != 0)
-    err("mmap1 mismatch");
-  if(memcmp(p2, "67890", 5) != 0)
-    err("mmap2 mismatch");
-
-  if (munmap(p1, PGSIZE) == -1)
-    err("munmap (5)");
-  if(memcmp(p2, "67890", 5) != 0)
-    err("mmap2 mismatch (2)");
-  if (munmap(p2, PGSIZE) == -1)
-    err("munmap (6)");
-
-  printf("test mmap two files: OK\n");
-
-  //NOTE: Test 7 - mmap 1 page for two files
-  //This tests whether the kernel knows how to handle multiple VMAs.
-  //If the programmer only implements one VMA, then this test fails.
-}
-```
-
-```C
-void
-fork_test(void)
-{
-  int fd;
-  int pid;
-  const char * const f = "mmap.dur";
-
-  printf("test fork\n");
-
-  // mmap the file twice.
-  makefile(f);
-  if ((fd = open(f, O_RDONLY)) == -1)
-    err("open (7)");
-  if (unlink(f) == -1)
-    err("unlink (3)");
-  char *p1 = mmap(0, PGSIZE*2, PROT_READ, MAP_SHARED, fd, 0);
-  if (p1 == MAP_FAILED)
-    err("mmap (7)");
-  char *p2 = mmap(0, PGSIZE*2, PROT_READ, MAP_SHARED, fd, 0);
-  if (p2 == MAP_FAILED)
-    err("mmap (8)");
-
-  // read just 2nd page.
-  if(*(p1+PGSIZE) != 'A')
-    err("fork mismatch (1)");
-
-  if((pid = fork()) < 0)
-    err("fork");
-  if (pid == 0) {
-    //_v1() triggers mmapfault(), which looks at p->fmap.
-    //So child proc needs to have the same fmap as its parent's.
-    _v1(p1);
-    if (munmap(p1, PGSIZE) == -1) // just the first page
-      err("munmap (7)");
-    printf("pid: %d\n", getpid());
-    exit(0); // tell the parent that the mapping looks OK.
-  }
-
-  int status = -1;
-  wait(&status);
-
-  if(status != 0){
-    printf("fork_test failed\n");
-    exit(1);
-  }
-
-  // check that the parent's mappings are still there.
-  _v1(p1);
-  _v1(p2);
-
-  printf("test fork: OK\n");
-
-  //NOTE: This is a small test. The parent proc mmap twice first, and then fork.
-  //In the child proc, _v1() triggers vmfault() and it is supposed to work as expected.
-  //This gives out the answer -- the child proc needs to copy the VMA data from the parent proc.
-  //One interesting thing is that the child proc just munmap() one page from p1 and then exit().
-  //Recall that the parent proc during kawiat() would release the memory of any zombie child proc,
-  //using uvmfree(), so we need to make sure that uvmfree() takes care of mmap regions
-  //that has not been released by munmap(). If we don't do so, freewalk() is going to panic,
-  //because it relies on uvunmap() to release the leaf before releasing the page tables themselves.
-  //A smaller requirement is that exiting the child proc should not impact the parent proc.
-  //Well since we are copying data, this should be fine.
-}
-```
-
-```C
-void
-more_test()
-{
-  int fd, pid;
-  char *p;
-  const char * const f = "mmap.dur";
-  
-  printf("test munmap prevents access\n");
-  
-  makefile(f);
-  if ((fd = open(f, O_RDWR)) == -1)
-    err("open");
-  p = mmap(0, PGSIZE*2, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (p == MAP_FAILED)
-    err("mmap");
-  close(fd);
-
-  *p = 'X';
-  *(p+PGSIZE) = 'Y';
-
-  pid = fork();
-  if(pid < 0) err("fork");
-  if(pid == 0){
-    *p = 'a';
-    *(p+PGSIZE) = 'b';
-    if(munmap(p+PGSIZE, PGSIZE) == -1)
-      err("munmap");
-    // this should cause a fatal fault
-    printf("*(p+PGSIZE) = %x\n", *(p+PGSIZE));
-    exit(0);
-  }
-  int st = 0;
-  wait(&st);
-  if(st != -1)
-    err("child #1 read unmapped memory");
-
-  pid = fork();
-  if(pid < 0) err("fork");
-  if(pid == 0){
-    *p = 'c';
-    *(p+PGSIZE) = 'd';
-    if(munmap(p, PGSIZE) == -1)
-      err("munmap");
-    // this should cause a fatal fault
-    printf("*p = %x\n", *p);
-    exit(0);
-  }
-  st = 0;
-  wait(&st);
-  if(st != -1)
-    err("child #2 read unmapped memory");
-
-  // parent should still be able to access the memory.
-  *p = 'P';
-  *(p+PGSIZE) = 'Q';
-
-  if(munmap(p, PGSIZE) == -1)
-    err("munmap");
-
-  *(p+PGSIZE) = 'R';
-  if(munmap(p+PGSIZE, PGSIZE) == -1)
-    err("munmap");
-
-  // read the file, check that the first page starts
-  // with P and the second page with R.
-  fd = open(f, O_RDONLY);
-  if(fd < 0) err("open");
-  if(read(fd, buf, PGSIZE) != PGSIZE) err("read");
-  if(buf[0] != 'P') err("first byte of file is wrong");
-  if(read(fd, buf, PGSIZE) != PGSIZE/2) err("read");
-  if(buf[0] != 'R') err("first byte of 2nd page of file is wrong");
-  close(fd);
-
-  printf("test munmap prevents access: OK\n");
-
-  //NOTE: mmap() 2 pages, RW + MAP_SHARED (so we have no issue writing back if needed)
-  //close(fd), and expect the mmap region continues to work.
-  //Modify the first char of each of the two pages.
-  //fork() a child proc. In the child proc, modify the first char of each of the two pages.
-  //Then munmap() 1 page from p. Then tries to read the first page from p.
-  //It expects the program to trigger a usertrap() fatal fault.
-  //The child proc then exit().
-  //The parent proc then modifies the first char of each page again.
-  //It then munmap() the first page of p. Modify the first char of the 2nd page, and munmap() it.
-  //Finally, it reads the file back from disk, and checks whether the modifications are preserved.
-
-  //It is a pretty complicated test. Here are the summaries:
-  //1) close(fd) should not impact mmap region already created
-  //2) child proc should share the same VMA data
-  //3) munmap() and exit() in the child proc should not impact the parent proc
-  //4) RW + MAP_SHARED mode mmap should retain all changes made in the mmap region
-
-  printf("test writes to read-only mapped memory\n");
-
-  makefile(f);
-
-  pid = fork();
-  if(pid < 0) err("fork");
-  if(pid == 0){
-    if ((fd = open(f, O_RDWR)) == -1)
-      err("open");
-    p = mmap(0, PGSIZE*2, PROT_READ, MAP_SHARED, fd, 0);
-    if (p == MAP_FAILED)
-      err("mmap");
-    // this should cause a fatal fault
-    *p = 0;
-    exit(*p);
-  }
-
-  st = 0;
-  wait(&st);
-  if(st != -1)
-    err("child wrote read-only mapping");
-
-  printf("test writes to read-only mapped memory: OK\n");
-}
-
-```
-
-There are a lot of material in the comments. But we can summarize the requirements in a few bullet points:
-
-- We should have 2 syscalls, `sys_mmap()` and `sys_munmap()`.
-- We should save the VMA data as an array (multiple mapping) in `struct proc` (parent and child have separate).
-- `sys_mmap()` should lazy map and rely on `vmfault()` to call the mmap fault handler do the actual map/kalloc job.
-- `sys_mmap()` should refuse to mmap RO file as RW+MAP_SHARED.
-- `sys_mmap()` should not be impacted by `close()`, maybe we can solve this by incrementing the `ref`.
-- `sys_munmap()` should be able to write back the whole file, without changing its size, for certain PROC and FLAGS combination.
-- `sys_munmap()` should also unmap the requested mmap region.
-- We should have a mmap fault handler, let's call it `mmapfault()`.
-- `vmfault()` should have access to the VMA data so that it knows when to call `mmapfault()`.
-- `mmapfault()` reads data from file to the mmap region.
-
-
 ### Incremental approach
 
 Actually, I think the above analysis is not realistic. It is impossible for a newbie to do the analysis fully and write down the whole specification. A much easier approach is just to try to pass the first test, and then the second, and so on. We still need to modify or add new stuffs for each of the new tests, but this is more approachable to ordinary people.
@@ -797,11 +333,34 @@ mmaptest failure: mmap (3), pid=3
   printf("test mmap read-only: OK\n");
 ```
 
-```C
+This is the second easiest test. Basically it says, if file is opened as RO, `mmap()` should NOT be able to mmap the region as writable. We only need to add one check in `mmapfault()`:
 
-  //NOTE: Test 3 - mmap 2 pages: PROT = RW, FLAGS = MAP_SHARED
-  //But the file is opened as RO. 
-  //So the expected behavior is that mmap() should return -1
+```C
+  //sysfile.c, sys_mmap(), above f->off = offset;
+  //No R/W mapping for a file opened RO
+  if ((prot & PROT_WRITE) && (f->writable == 0) && (flags & MAP_SHARED))
+    return (char *) -1;
+```
+
+Once we run the program, we see that it passes this test, and the next one as well.
+
+```
+$ mmaptest
+test basic mmap
+test basic mmap: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+mmaptest failure: file page 0 does not contain modifications, pid=3
+```
+
+#### Test 1.4 - test mmap read/write
+
+```C
 
   printf("test mmap read/write\n");
 
@@ -830,6 +389,28 @@ mmaptest failure: mmap (3), pid=3
 
   printf("test mmap read/write: OK\n");
 
+```
+
+Test 1.4 doesn't have any new materials. However, technically the next test relies on the code in this test, so we will need to come back to this one shortly. I'll paste the output again. Note that test mmap dirty failed to pass.
+
+```
+$ mmaptest
+test basic mmap
+test basic mmap: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+mmaptest failure: file page 0 does not contain modifications, pid=3
+```
+
+#### Test 1.5 - test mmap dirty
+
+```C
+
   printf("test mmap dirty\n");
 
   // check that the writes to the mapped memory were
@@ -839,11 +420,14 @@ mmaptest failure: mmap (3), pid=3
   int temp = read(fd, buf, PGSIZE);
   if(temp != PGSIZE)
     err("dirty read #1");
+  //This checks whether the previous write into the mmap region
+  //has been written back to the file.
   for (i = 0; i < PGSIZE; i++){
     if (buf[i] != 'B')
       err("file page 0 does not contain modifications");
   }
   temp = read(fd, buf, PGSIZE);
+  //This checks whether we wrote back the correct length of bytes
   if(temp != PGSIZE/2)
   {
     printf("mmaptest: read returns 0x%x\n", temp);
@@ -874,6 +458,120 @@ mmaptest failure: mmap (3), pid=3
   //If we extend the file, then the second read() is going to read a full 1 page.
   //(The lab hints note that we can always write back the full file without worrying about the dirty bit)
 
+```
+
+The most important thing about this part is to implement the write back. There are a few places that I could implement it, but I chose to implement it in `munmap()`. It does have a few advantages.
+
+- It passes all tests. Eventually none of tests failed.
+- It is the last point that we have to do a write back. Otherwise we lose the mapping information and can never do the writeback again.
+- `munmap()` is not called fairly often, and since I only intend to implement full file writeback, it is faster.
+
+```C
+//sysfile.c, in sys_munmap(), here is the full source code because there is a lot of changes.
+vaddr_t
+sys_munmap(void)
+{
+  vaddr_t addr = 0;
+  int len;
+  int writeback = 0;
+
+  //Step 1: Read cli arguments
+  argaddr(0, &addr);
+  argint(1, &len);
+  vaddr_t baseaddr = PGROUNDDOWN(addr);
+
+  //Step 2: Check which mmap region addr belongs to
+  struct proc *p = myproc();
+  //Hardcode to the first entry at the moment.
+  //In a while we will implement a function to find the index
+  int index = 0;
+
+  //Do we need to writeback?
+  //Has to have PROT_WRITE as well as MAP_SHARED, and file is writable
+  if ((
+    p->fmap[index].prot & PROT_WRITE) && 
+    (p->fmap[index].flags & MAP_SHARED) &&
+    p->fmap[index].f->writable
+  )
+    writeback = 1;
+
+  //Step 3: Write back
+  if (writeback)
+  {
+    struct file *f = p->fmap[index].f;
+    if (!(f->writable))
+      panic("sys_munmap: Supposed to writeback but f is not writable");
+
+    //NOTE: _v1(p) calls `fileread()` which modifies f->off.
+    //So we need to reset it to 0 once we decide to write back.
+    f->off = 0;
+    //NOTE: `filewrite()` is not supposed to increment file size.
+    //So we need to fetch the size and write back the whole file.
+    int ret = filewrite(f, p->fmap[index].originalstartua, f->ip->size);
+    if (ret < 0)
+      panic("sys_munmap: file writeback failed");
+  }
+
+  //Step 4: Unmap the region
+  uint64 npages = len / PGSIZE;
+  uvmunmap(p->pagetable, baseaddr, npages, 1);
+
+  //For now, just remove the VMA entry once munmap() is called.
+  //In the future we need to move startua and len around based on the arguments of munmap().
+  //The way we tell an entry is empty is by checking the struct file * against 0.
+  p->fmap[index].f->ref -= 1;
+  p->fmap[index].f = 0;
+  p->fmap[index].flags = 0;
+  p->fmap[index].len = 0;
+  p->fmap[index].prot = 0;
+  p->fmap[index].startua = 0;
+  p->totalvma -= 1;
+
+  return 0;
+}
+```
+
+The key of the writeback, is to write back the whole file without changing its size. To do that, we need two things -- the original startua, which is the starting point of the mmap region, and the size of the file, which is stored in `f->ip->size`. I used to write:
+
+```C
+//sys_munmap(), wrong writeback
+    //instead of f->ip->size, we write back len, the second argument of the function
+    int ret = filewrite(f, p->fmap[index].originalstartua, len);
+```
+
+But this is wrong and breaks the following test. When debugging in `gdb` I found that instead of reading PGSIZE/2 it reads a full page. Why? Because `filewrite()` calls `writei()`, and then updates `f->off` by adding `r`. Then `writei()` updates `ip->size` based on `off`. So eventually I incremented the file size from 1.5 pages to 2 pages. And then `read()` reads 2 pages instead of 1.5 pages, which breaks the test.
+
+```C
+  temp = read(fd, buf, PGSIZE);
+  //This checks whether we wrote back the correct length of bytes
+  if(temp != PGSIZE/2)
+  {
+    printf("mmaptest: read returns 0x%x\n", temp);
+    err("dirty read #2");
+  }
+```
+
+Here is the output afterwards. We managed to pass the mmap dirty test but fails the not-mapped unmap test.
+
+```
+$ mmaptest
+test basic mmap
+test basic mmap: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+test mmap dirty: OK
+test not-mapped unmap
+scause=0xd sepc=0x80004c7a stval=0x4
+panic: kerneltrap
+```
+
+```C
+
   printf("test not-mapped unmap\n");
 
   // unmap the rest of the mapped memory.
@@ -885,6 +583,101 @@ mmaptest failure: mmap (3), pid=3
   //NOTE: Test 5 - munmap() the 3rd page (recall that we mmap 3 pages ^?)
   //Not much to say here. The expected result is that we should be able to
   //munmap() any region mapped by mmap()
+```
+
+The reason this test fails is because we naively remove the fmap entry once `sys_munmap()` is called. But for this 3 pages mmap region, it was actually unmmapped by 2 `sys_munmap()` calls. So in our naive implementation, the first `munmap()` already removes the entry, so the second one could not find the entry, thus it triggers a kernel panic (cannot read array index).
+
+```C
+  // unmap just the first two of three pages of mapped memory.
+  if (munmap(p, PGSIZE*2) == -1)
+    err("munmap (3)");
+
+  //...rest of the code
+
+  // unmap the rest of the mapped memory.
+  if (munmap(p+PGSIZE*2, PGSIZE) == -1)
+    err("munmap (4)");
+```
+
+So now we need to think how should we deal with this. The obvious answer is: we don't remove the entry, until the whole mmap region has been unmapped. It is not easy to implement for all cases. For example, you could have a 3 page mmap region, and then the 2nd page is unmapped. Now you have to split one 3 page region into two 1 page region. This probably involes some data structure more complicated than a simple array. Fortunately, none of the tests grills us on this kind of cases. So we can get away by saving the original `endua` (which is `startua`+`len`), moving `startua` and `len` around for each `sys_munmap()` call, and removing the entry only when the new `startua` >= `endua`.
+
+```C
+//sysfile.c, sys_munmap(), under writeback = 1
+
+  vaddr_t newstartua, endua = 0;
+  if (baseaddr <= p->fmap[index].startua)
+  {
+    //e.g. munmap(p, PGSIZE * 2);
+    //baseaddr should never < startua, but just in case
+    newstartua = p->fmap[index].startua + len;
+    endua = p->fmap[index].startua + p->fmap[index].len;
+  }
+  else
+  {
+    //e.g. munmap(p+PGSIZE, PGSIZE);
+    //assuming munmap() never breaks the region into multiple parts
+    //i.e. it either unmaps some mem in the front, or in the back
+    newstartua = p->fmap[index].startua;
+    endua = baseaddr;
+  }
+
+//same file, between uvmunmap(p->pagetable, baseaddr, npages, 1); and return 0;
+
+  //If we already unmapped the whole mmap region, remove the entry.
+  if (newstartua >= endua)
+  {
+    DPRINTF("sys_munmap: removed fmap entry %d\n", index);
+    p->fmap[index].f->ref -= 1;
+    p->fmap[index].f = 0;
+    p->fmap[index].flags = 0;
+    p->fmap[index].len = 0;
+    p->fmap[index].prot = 0;
+    p->fmap[index].startua = 0;
+    p->totalvma -= 1;
+  }
+  //Otherwise, simply increment startua
+  else
+  {
+    p->fmap[index].startua = newstartua;
+    p->fmap[index].len -= len;
+  }
+```
+
+After these two changes, we managed to get a new error:
+
+```
+$ mmaptest
+test basic mmap
+test basic mmap: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+test mmap dirty: OK
+test not-mapped unmap
+panic: sys_munmap: file writeback failed
+```
+
+If we go back to `mmaptest.c`, we see that it is trying to execute `if (munmap(p+PGSIZE*2, PGSIZE) == -1)`. But the file is only 1.5 pages long, so there is no point to write back. I added a check for `writeback` and it worked.
+
+```C
+//sysfile.c, sys_munmap()
+
+  if ((
+    p->fmap[index].prot & PROT_WRITE) && 
+    (p->fmap[index].flags & MAP_SHARED) &&
+    p->fmap[index].f->writable &&
+    p->fmap[index].originalstartua + p->fmap[index].f->ip->size > addr
+  )
+    writeback = 1;
+```
+
+#### Test 1.6 - test lazy access
+
+```C
 
   printf("test lazy access\n");
 
@@ -927,6 +720,14 @@ mmaptest failure: mmap (3), pid=3
   //The expectation is: mmap() should never pre-load the file into the mapped pages.
   //Instead, the kernel relies on fault handlers to load the file once needed.
   //The code that triggers the handler is if(*p != 'm').
+
+```
+
+This test ran into a deadlock in `sys_munmap()`. The reason is that, the test program checked for `*p`, in `if(*p != 'm')`. So it triggers `mmapfault()` to load the first page of the file. It doesn't load the second page because it doesn't need. But when we write back in `sys_munmap()`, it tries to write back both pages, so this triggers another `mmapfault()`, which tries to load by calling `fileread()`. Both `filewrite()` (called by `sys_munmap()`) and `fileread()` need to lock the inode, thus caused the deadlock.
+
+The best way to solve this issue, is to implement the dirty bit -- writing back a page never mapped is very weird in its own sense. However, I'm a bit lazy, so I created a special version of `filewrite()`, `writei()` and `copyin()` -- `filewriteback()`, `writebacki()` and `copyinback()`. The only real difference is that in `copyinback()` if `pa0` is 0 we then ignore it and do not call `vmfault()`. This is probably not the best idea, but it works, meh. I'll implement the dirty bit in a different branch.
+
+```C
 
   printf("test mmap two files\n");
 

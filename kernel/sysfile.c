@@ -19,7 +19,7 @@
 #include "memlayout.h"
 
 // static uint64 is_mmap(uint64 va);
-// static int ffmmap(struct proc * p);
+static int ffmmap(struct proc * p);
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -533,101 +533,101 @@ sys_pipe(void)
 //Sample call: 
 //char *p = mmap(0, PGSIZE*2, PROT_READ, MAP_PRIVATE, fd, 0);
 
-// char*
-// sys_mmap(void)
-// {
-//   // void *addr = 0;
-//   int len;
-//   int prot;
-//   int flags;
-//   int fd;
-//   int offset;
+char*
+sys_mmap2(void)
+{
+  // void *addr = 0;
+  int len;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
 
-//   //Step 1: Read cli arguments
-//   //argaddr(0, addr);
-//   argint(1, &len);
-//   argint(2, &prot);
-//   argint(3, &flags);
-//   argint(4, &fd);
-//   argint(5, &offset);
+  //Step 1: Read cli arguments
+  //argaddr(0, addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argint(5, &offset);
 
-//   // DPRINTF("sys_mmap: addr is %p\n", addr);
-//   DPRINTF("sys_mmap: len is %d\n", len);
-//   DPRINTF("sys_mmap: prot is %d\n", prot);
-//   DPRINTF("sys_mmap: flags is %d\n", flags);
-//   DPRINTF("sys_mmap: fd is %d\n", fd);
-//   DPRINTF("sys_mmap: offset is %d\n", offset);
+  // DPRINTF("sys_mmap: addr is %p\n", addr);
+  DPRINTF("sys_mmap: len is %d\n", len);
+  DPRINTF("sys_mmap: prot is %d\n", prot);
+  DPRINTF("sys_mmap: flags is %d\n", flags);
+  DPRINTF("sys_mmap: fd is %d\n", fd);
+  DPRINTF("sys_mmap: offset is %d\n", offset);
 
-//   //Step 2: Lazy allocate len/PGSIZE pages for mmap
-//   struct proc *p = myproc();
-//   DPRINTF("sys_mmap: max proc va is: %ld\n", p->sz);
-//   struct file *f = p->ofile[fd];
-//   if (!f)
-//     panic("sys_mmap: fd already closed");
+  //Step 2: Lazy allocate len/PGSIZE pages for mmap
+  struct proc *p = myproc();
+  DPRINTF("sys_mmap: max proc va is: %ld\n", p->sz);
+  struct file *f = p->ofile[fd];
+  if (!f)
+    panic("sys_mmap: fd already closed");
 
-//   //NOTE: Probably should set offset too, because previous readi() moves offset
-//   f->off = offset;
+  //NOTE: Probably should set offset too, because previous readi() moves offset
+  f->off = offset;
 
-//   //No R/W mapping for a file opened RO
-//   //Kinda complicated, I created the logic from reading mmaptest.c
-//   //I don't quite understand it TBH
-//   if ((prot & PROT_WRITE) && (f->writable == 0) && (flags & MAP_SHARED))
-//     return (char *) -1;
+  //No R/W mapping for a file opened RO
+  //Kinda complicated, I created the logic from reading mmaptest.c
+  //I don't quite understand it TBH
+  if ((prot & PROT_WRITE) && (f->writable == 0) && (flags & MAP_SHARED))
+    return (char *) -1;
 
-//   //Do not touch p->sz, leave it to regular memory allocation/deallocation
-//   //uint64 oldsz = p->sz;
-//   //p->sz += len;
-//   //DPRINTF("sys_mmap: oldsz %p - newsz %p\n", (void *)oldsz, (void *)(p->sz));
+  //Do not touch p->sz, leave it to regular memory allocation/deallocation
+  //uint64 oldsz = p->sz;
+  //p->sz += len;
+  //DPRINTF("sys_mmap: oldsz %p - newsz %p\n", (void *)oldsz, (void *)(p->sz));
 
-//   //Check if fmap is full
-//   if (p->totalvma == MAXMMAP)
-//     return 0;
+  //Check if fmap is full
+  if (p->totalvma == MAXMMAP)
+    return 0;
 
-//   int lastfreevma = ffmmap(p);
-//   //Step 3: Mark in a special place in proc
-//   struct vma fm;
-//   //NOTE: Each mmap region takes 1 GiB
-//   //The first starts from MMAPSTART, the second from MMAPSTART + 1 GiB, etc.
-//   fm.startua = MMAPSTART + lastfreevma * GiB;
-//   //Save the original startua for full file writeback,
-//   //as startua may change
-//   fm.originalstartua = fm.startua;
-//   fm.len = len;
-//   fm.prot = prot;
-//   fm.flags = flags;
-//   //NOTE: It's very difficult to find pathname from f or fd
-//   fm.f = f;
+  int lastfreevma = ffmmap(p);
+  //Step 3: Mark in a special place in proc
+  struct vma fm;
+  //NOTE: Each mmap region takes 1 GiB
+  //The first starts from MMAPSTART, the second from MMAPSTART + 1 GiB, etc.
+  fm.startua = MMAPSTART + lastfreevma * GiB;
+  //Save the original startua for full file writeback,
+  //as startua may change
+  fm.originalstartua = fm.startua;
+  fm.len = len;
+  fm.prot = prot;
+  fm.flags = flags;
+  //NOTE: It's very difficult to find pathname from f or fd
+  fm.f = f;
 
-//   p->fmap[lastfreevma] = fm;
-//   //Increment file ref so that fileclose() keeps the file open, I think
-//   fm.f->ref += 1;
-//   p->totalvma += 1;
-//   // printf("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)fm.f, fm.f->ref);
+  p->fmap[lastfreevma] = fm;
+  //Increment file ref so that fileclose() keeps the file open, I think
+  fm.f->ref += 1;
+  p->totalvma += 1;
+  // printf("sys_mmap: ref of fd %d file 0x%lx is %d\n", fd, (uint64)fm.f, fm.f->ref);
 
-//   //We did not allocate/mappage,
-//   //so next time the program tries to access these pages,
-//   //it should tirgger vmfault(),which calls mmapfault() first
+  //We did not allocate/mappage,
+  //so next time the program tries to access these pages,
+  //it should tirgger vmfault(),which calls mmapfault() first
 
-//   //mmap starts from a specifc region ourside of "ordinary" memory allocation
-//   DPRINTF(
-//     "sys_mmap: done in slot %d, mmap region starts from %p, len 0x%x\n", 
-//     lastfreevma, (void *)fm.startua, fm.len
-//   );
-//   return (char*)fm.startua;
-// }
+  //mmap starts from a specifc region ourside of "ordinary" memory allocation
+  DPRINTF(
+    "sys_mmap: done in slot %d, mmap region starts from %p, len 0x%x\n", 
+    lastfreevma, (void *)fm.startua, fm.len
+  );
+  return (char*)fm.startua;
+}
 
-// //Grab the index of first free element of p->fmap array
-// static int 
-// ffmmap(struct proc * p)
-// {
-//   int i = 0;
-//   for (; i < MAXMMAP; i++)
-//   {
-//     if (!(p->fmap[i].f))
-//       return i;
-//   }
-//   return -1;
-// }
+//Grab the index of first free element of p->fmap array
+static int 
+ffmmap(struct proc * p)
+{
+  int i = 0;
+  for (; i < MAXMMAP; i++)
+  {
+    if (!(p->fmap[i].f))
+      return i;
+  }
+  return -1;
+}
 
 char*
 sys_mmap(void)
@@ -660,8 +660,11 @@ sys_mmap(void)
   f->off = offset;
 
   //Step 4: Create a VMA object and slap it into the proc
-  //Temporarily put the data into the first entry. We will implement a function that returns the index of the next empty entry.
-  int lastfreevma = 0;
+  //Check if fmap is full
+  if (p->totalvma == MAXMMAP)
+    return 0;
+  int lastfreevma = ffmmap(p);
+
   struct vma fm;
   //My custom mmap flavor: each mmap region takes 1 GiB (Who needs more than 1 GiB?)
   //The first starts from MMAPSTART, the second from MMAPSTART + 1 GiB, etc.
@@ -698,10 +701,7 @@ sys_munmap2(void)
 
   //Step 2: Check which mmap region addr belongs to
   struct proc *p = myproc();
-  //TODO: This logic is wrong, sometimes we munmap e.g. the second page
-  //munmap(p+PGSIZE, PGSIZE), findmapbase() won't find the correct index
-  //check out more_test() for such requirement
-  // int index = findmmapbase(p, baseaddr);
+
   int index = findmmapwithin(p, baseaddr);
   if (index == -1)
   {
@@ -849,9 +849,13 @@ sys_munmap(void)
 
   //Step 2: Check which mmap region addr belongs to
   struct proc *p = myproc();
-  //Hardcode to the first entry at the moment.
-  //In a while we will implement a function to find the index
-  int index = 0;
+
+  int index = findmmapwithin(p, baseaddr);
+  if (index == -1)
+  {
+    printf("Out of range 0x%lx\n", baseaddr);
+    return -1;
+  }
 
 
   //Do we need to writeback?

@@ -655,23 +655,14 @@ mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
   //Similar to fileread() but with an offset.
   //What if user program does NOT read in order? Read Trial 5 in lab note.
   //We should be able to get base va addr from fmap
-  
-  // vaddr_t basefmava = p->fmap[fmapidx].startua;
-  // int vaoff = baseva - basefmava;
-  
-  // //Can't use fileread() directly because it doesn't have an argument for offset
-  
-  // ilock(f->ip);
-  // int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
-  
-  // //Do not increment the offset as in fileread(),
-  // //because offset = diff between startua and baseva
-  
-  // iunlock(f->ip);
-
-  //For now we simply slap on a fileread() which works for this specific test.
-  //We will see in the near future that this no longer works when the tests become more sophiscated.
-  int bytesread = fileread(f, baseva, PGSIZE);
+  vaddr_t basefmava = p->fmap[fmapidx].startua;
+  int vaoff = baseva - basefmava;
+  //Can't use fileread() directly because it doesn't have an argument for offset
+  ilock(f->ip);
+  int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+  //Do not increment the offset as in fileread(),
+  //because offset = diff between startua and baseva
+  iunlock(f->ip);
   if (bytesread <= 0)
     panic("mmapfault: fileread failed!");
 

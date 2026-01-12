@@ -268,7 +268,8 @@ endif
 
 ifeq ($(LAB),mmap)
 UPROGS += \
-	$U/_mmaptest
+	$U/_mmaptest\
+	$U/_mmap
 endif
 
 ifeq ($(LAB),net)

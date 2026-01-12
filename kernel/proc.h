@@ -90,6 +90,8 @@ struct vma
   struct file *f;
   vaddr_t startua;
   vaddr_t originalstartua;
+  //offset from file start
+  int offset;
   int len;
   int prot;
   int flags;

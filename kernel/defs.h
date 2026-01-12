@@ -192,6 +192,9 @@ uint64          vmfault(pagetable_t, uint64, int);
 uint64          mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read);
 int             findmmapbase(struct proc * p, uint64 startua);
 int             findmmapwithin(struct proc * p, uint64 addr);
+uint64          sys_cdw(void);
+uint64          sys_rdw(void);
+uint64          sys_idw(void);
 #if defined(LAB_PGTBL) || defined(SOL_MMAP)
 void            vmprint(pagetable_t);
 #endif

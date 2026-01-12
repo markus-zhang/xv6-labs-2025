@@ -44,3 +44,7 @@ entry("pause");
 entry("uptime");
 entry("mmap");
 entry("munmap");
+entry("checkdirty");
+entry("cdw");
+entry("rdw");
+entry("idw");

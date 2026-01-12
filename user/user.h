@@ -31,6 +31,10 @@ int pause(int);
 int uptime(void);
 char* mmap(void*, int, int, int, int, int);
 int munmap(void*, int);
+uint64 checkdirty(vaddr_t);
+uint64 cdw(void);
+uint64 rdw(void);
+uint64 idw(void);
 #ifdef LAB_NET
 int bind(uint16);
 int unbind(uint16);

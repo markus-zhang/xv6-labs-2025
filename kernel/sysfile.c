@@ -568,7 +568,11 @@ sys_mmap(void)
   if (!f)
     panic("sys_mmap: fd already closed");
 
-  //TODO: Evaluate whether we need this. We manually calculate offset during writeback.
+  //Evaluate whether we need this. We manually calculate offset during writeback.
+  //Does mmapfault() use offset? No, it calculates the offset instead.
+  //FIXME: However, if the mmap is NOT from the beginning of the file, say offset = 0x0200,
+  //then both mmapfault() and writeback in sys_munmap() need to take this into consideration.
+  //mmapfault() needs to apply offset to the calculated vaoff.
   f->off = offset;
 
   //No R/W + MAP_SHARED mapping for a file opened RO
@@ -590,6 +594,9 @@ sys_mmap(void)
   fm.len = len;
   fm.prot = prot;
   fm.flags = flags;
+  //This is to fix the above FIXME about the offset,
+  //both sys_munmap() writeback and mmapfault() needs offset infomation.
+  fm.offset = offset;
   //NOTE: sys_close() always sets fd to 0, so file-backed mmap needs to use struct file *.
   fm.f = f;
 
@@ -629,6 +636,7 @@ sys_munmap(void)
   vaddr_t addr = 0;
   int len = 0;
   int writeback = 0;
+  int isdirty = 0;
 
   //Step 1: Read cli arguments and ASSERT().
   argaddr(0, &addr);
@@ -661,6 +669,7 @@ sys_munmap(void)
   //Other condition: Do NOTE write back unmapped part (p->fmap[index].startua + p->fmap[index].f->ip->size > addr)
   //For example, the file is of 10.5 pages long. Do we writeback, and how much do we writeback if the 10th page is mmapped?
   if ((
+    isdirty &&
     p->fmap[index].prot & PROT_WRITE) && 
     (p->fmap[index].flags & MAP_SHARED) &&
     p->fmap[index].f->writable &&
@@ -689,6 +698,9 @@ sys_munmap(void)
     endua = baseaddr;
   }
 
+  //TODO: Dirty bit: we first check whether the page is dirty. If not, we skip it.
+  //If yes, we write it back. Since we are NOT writing back the whole file,
+  //we need to loop through and check each page in [originalstartua, min(baseaddr, filesize)].
   if (writeback)
   {
     struct file *f = p->fmap[index].f;
@@ -700,11 +712,44 @@ sys_munmap(void)
     //_v1(p) calls `fileread()` which modifies f->off.
     //So we need to reset it to 0 once we decide to write back.
     f->off = 0;
-    //NOTE: `filewrite()` is not supposed to increment file size.
-    //So we need to fetch the size and write back the whole file.
-    int ret = filewriteback(f, p->fmap[index].originalstartua, f->ip->size);
-    if (ret < 0)
-      panic("sys_munmap: file writeback failed");
+
+    //FIXME: How do we deal with partial mmap in the middle? e.g. 3 pages in the middle of a 20-page file.
+    //The solution is to save the offset argument in mmap() to vma.
+    vaddr_t pagestartua = p->fmap[index].originalstartua;
+    vaddr_t maxendua = pagestartua + len;
+    vaddr_t eof = p->fmap[index].originalstartua + f->ip->size;
+    if (maxendua > eof)
+      maxendua = len;
+
+    for (; pagestartua < maxendua; pagestartua += PGSIZE)
+    {
+      pte_t *pte = walk(p->pagetable, pagestartua, 0);
+      //Skip unmapped pages. This is likely whenever user doesn't read/write a page from the mmap region.
+      if (!pte)
+        continue;
+      //Skip clean pages. We only need to write back dirty pages.
+      if ((*pte) & PTE_D == 0)
+        continue;
+
+      //Now we write back dirty pages.
+      //We need to calculate how many bytes to write back, not necessarily can write back a whole page.
+      //For example, let's say pagestartua starts from 0x1000, but file is only 0x0500 bytes long,
+      //so even for the first loop we can only write back half of a page.
+      int bytes = PGSIZE;
+      if (pagestartua + PGSIZE > maxendua)
+        bytes = maxendua - pagestartua;
+
+      //Write back each dirty page. Not necessarily a full page.
+      int ret = filewriteback(f, p->fmap[index].originalstartua, bytes);
+      if (ret < 0)
+        panic("sys_munmap: file writeback failed");
+
+      //increments dw
+      sys_idw();
+
+      //clear the dirty bit
+
+    }
   }
 
   //Step 3: Unmap the region

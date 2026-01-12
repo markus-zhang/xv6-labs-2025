@@ -21,6 +21,9 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+//mmap dirty bit writeback counts
+uint64 dw = 0;
+
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -586,22 +589,34 @@ mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
     return 0;
   }
 
-  //Similar to fileread() but with an offset.
-  //What if user program does NOT read in order? Read Trial 5 in lab note.
-  //We should be able to get base va from fmap and manually calculate offset,
-  //and then pass the offset to readi() so it reads the page caller wants.
-  vaddr_t basefmava = p->fmap[fmapidx].startua;
-  int vaoff = baseva - basefmava;
-  //I can't use fileread() because it doesn't have an argument for the offset.
-  //Instead it uses f->off. This is fine for sequential reads.
-  //But difficult if we want to read arbitrary pages (e.g. 10th page -> 3rd page).
-  ilock(f->ip);
-  int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
-  //Do not increment the offset as in fileread(), because we don't use it.
-  //Instead we calculate offset as the diff between startua and baseva.
-  iunlock(f->ip);
-  if (bytesread <= 0)
-    panic("mmapfault: fileread failed!");
+  //We only need to read from file if it's a read operation.
+  if (read)
+  {
+    //FIXME: This does NOT consider the case that the mmap offsets from the beginning of the file.
+    //For example, say the mmap region is 20 pages of a 15 page file, 
+    //with an offset of 2 pages -- i.e. the mmap region starts from the 3rd page.
+    //So effectively, the mmap region is from the 3rd page to the last page, a total of 13 pages.
+    //For each read operation, it needs to take the 2-page offset into consideration.
+    //For example, if the user program reads the 2nd page of the mmap region,
+    //it is in fact trying to read the 4th page of the file, because the mmap region starts from the 3rd page.
+
+    //Similar to fileread() but with an offset.
+    //What if user program does NOT read in order? Read Trial 5 in lab note.
+    //We should be able to get base va from fmap and manually calculate offset,
+    //and then pass the offset to readi() so it reads the page caller wants.
+    vaddr_t basefmava = p->fmap[fmapidx].startua;
+    int vaoff = baseva - basefmava;
+    //I can't use fileread() because it doesn't have an argument for the offset.
+    //Instead it uses f->off. This is fine for sequential reads.
+    //But difficult if we want to read arbitrary pages (e.g. 10th page -> 3rd page).
+    ilock(f->ip);
+    int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+    //Do not increment the offset as in fileread(), because we don't use it.
+    //Instead we calculate offset as the diff between startua and baseva.
+    iunlock(f->ip);
+    if (bytesread <= 0)
+      panic("mmapfault: fileread failed!");
+  }
 
   // printf("mmapfault: read 0x%x bytes\n", bytesread);
   return mem;
@@ -617,5 +632,62 @@ ismapped(pagetable_t pagetable, vaddr_t va)
   if (*pte & PTE_V){
     return 1;
   }
+  return 0;
+}
+
+//Simple syscall to check the dirty bit -- bit7.
+uint64
+sys_checkdirty(void)
+{
+  //Get argument
+  vaddr_t addr;
+  argaddr(0, &addr);
+
+  struct proc * p = myproc();
+  if (!p)
+  {
+    printf("sys_checkdirty: failed to obtain the proc pointer\n");
+    return 0;
+  }
+
+  //Get the fmap entry
+  int index = findmmapbase(p, addr);
+  if (index < 0)
+  {
+    printf("sys_checkdirty: addr 0x%lx not in mmap region\n", addr);
+    return 0;
+  }
+
+  pte_t* pte = walk(p->pagetable, addr, 0);
+
+  if (!pte)
+  {
+    printf("sys_checkdirty: addr 0x%lx not mapped\n", addr);
+    return 0;
+  }
+
+  return (((*pte) & PTE_D) >> 7);
+}
+
+//syscall to reset dw
+uint64
+sys_cdw(void)
+{
+  dw = 0;
+  return 0;
+}
+
+//syscall to get dw
+uint64
+sys_rdw(void)
+{
+  return dw;
+}
+
+//syscall to increment dw
+uint64
+sys_idw(void)
+{
+  dw += 1;
   return 0;
 }

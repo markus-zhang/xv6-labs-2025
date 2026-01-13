@@ -91,6 +91,7 @@ struct vma
   vaddr_t startua;
   vaddr_t originalstartua;
   int len;
+  int offset;
   int prot;
   int flags;
 };

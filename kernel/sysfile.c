@@ -554,6 +554,7 @@ sys_mmap(void)
   //In Linux, len can be anything but mmap() rounds it to PGSIZE.
   //Here we enforce it to be a multiple of PGSIZE.
   ASSERT((len > 0) && (len % PGSIZE == 0));
+  ASSERT((offset >= 0) && (offset % PGSIZE == 0));
 
   DPRINTF("sys_mmap: len is %d\n", len);
   DPRINTF("sys_mmap: prot is %d\n", prot);
@@ -569,7 +570,7 @@ sys_mmap(void)
     panic("sys_mmap: fd already closed");
 
   //TODO: Evaluate whether we need this. We manually calculate offset during writeback.
-  f->off = offset;
+  //f->off = offset;
 
   //No R/W + MAP_SHARED mapping for a file opened RO
   if ((prot & PROT_WRITE) && (f->writable == 0) && (flags & MAP_SHARED))
@@ -590,6 +591,8 @@ sys_mmap(void)
   fm.len = len;
   fm.prot = prot;
   fm.flags = flags;
+  //Store offset in VMA so every write can reference it.
+  fm.offset = offset;
   //NOTE: sys_close() always sets fd to 0, so file-backed mmap needs to use struct file *.
   fm.f = f;
 
@@ -621,6 +624,120 @@ ffmmap(struct proc * p)
       return i;
   }
   return -1;
+}
+
+uint64
+sys_munmap2(void)
+{
+  vaddr_t addr = 0;
+  int len = 0;
+  int writeback = 0;
+
+  //Step 1: Read cli arguments and ASSERT().
+  argaddr(0, &addr);
+  argint(1, &len);
+
+  if (len == 0)
+    return 0;
+
+  //We use findmmapwithin() so addr is not required to be aligned to PGSIZE.
+  //TODO: However munmap() in Linux requires this.
+  ASSERT(addr % PGSIZE == 0);
+  vaddr_t baseaddr = PGROUNDDOWN(addr);
+
+  //According to the test program, len should be aligned to PGSIZE, 
+  //TODO: However munmap() in Linux does not require this.
+  ASSERT(len % PGSIZE == 0);
+
+  //Step 2: Check which mmap region addr belongs to.
+  struct proc *p = myproc();
+
+  int index = findmmapwithin(p, baseaddr);
+  if (index == -1)
+  {
+    printf("Out of range 0x%lx\n", baseaddr);
+    return -1;
+  }
+
+  //Step 2: Do we need to writeback?
+  //Pre-requisite: prot = PROT_WRITE, flags = MAP_SHARED, and file is writable.
+  //Other condition: Do NOTE write back unmapped part (p->fmap[index].startua + p->fmap[index].f->ip->size > addr)
+  //For example, the file is of 10.5 pages long. Do we writeback, and how much do we writeback if the 10th page is mmapped?
+  if ((
+    p->fmap[index].prot & PROT_WRITE) && 
+    (p->fmap[index].flags & MAP_SHARED) &&
+    p->fmap[index].f->writable &&
+    p->fmap[index].originalstartua + p->fmap[index].f->ip->size > addr
+  )
+    writeback = 1;
+
+  //Step 3: Calculate newstartua and endua based on which region the user wants to munmap.
+  //1) len, the second argument of munmap(), is always PGSIZE aligned.
+  //2) tests never munmap() a middle page, to break the mmap region into 2.
+  //Point 2) is especially important as it impacts the vma data structure.
+  vaddr_t newstartua, endua = 0;
+  if (baseaddr <= p->fmap[index].startua)
+  {
+    //e.g. munmap(p, PGSIZE * 2);
+    //baseaddr should never < startua, but just in case.
+    newstartua = p->fmap[index].startua + len;
+    endua = p->fmap[index].startua + p->fmap[index].len;
+  }
+  else
+  {
+    //e.g. munmap(p+PGSIZE, PGSIZE);
+    //assuming munmap() never breaks the region into multiple parts.
+    //i.e. it either unmaps some mem in the front, or in the back.
+    newstartua = p->fmap[index].startua;
+    endua = baseaddr;
+  }
+
+  //Step 3: Write back in demand.
+  if (writeback)
+  {
+    struct file *f = p->fmap[index].f;
+    //printf("sys_munmap: writing back 0x%x bytes for addr %p\n", f->ip->size, (void *)baseaddr);
+    if (!(f->writable))
+      panic("sys_munmap: Supposed to writeback but f is not writable");
+
+    //_v1(p) calls `fileread()` which modifies f->off.
+    //So we need to reset it to 0 once we decide to write back.
+    f->off = 0;
+    //NOTE: `filewrite()` is not supposed to increment file size.
+    //So we need to fetch the size and write back the whole file.
+    int ret = filewriteback(f, p->fmap[index].originalstartua, f->ip->size);
+    if (ret < 0)
+      panic("sys_munmap: file writeback failed");
+  }
+
+  //Step 3: Unmap the region
+  uint64 npages = len / PGSIZE;
+  uvmunmap(p->pagetable, baseaddr, npages, 1);
+
+  //If we already unmapped the whole mmap region, remove the entry.
+  if (newstartua >= endua)
+  {
+    DPRINTF("sys_munmap: removed fmap entry %d\n", index);
+    p->fmap[index].f->ref -= 1;
+    p->fmap[index].f = 0;
+    p->fmap[index].flags = 0;
+    p->fmap[index].len = 0;
+    p->fmap[index].prot = 0;
+    p->fmap[index].startua = 0;
+    p->fmap[index].originalstartua = 0;
+    p->totalvma -= 1;
+  }
+  //Otherwise, simply increment startua
+  else
+  {
+    p->fmap[index].startua = newstartua;
+    p->fmap[index].len -= len;
+  }
+
+  DPRINTF("sys_munmap: release 0x%x bytes at addr %p\n", len, (void *)baseaddr);
+  DPRINTF("fmap[%d]: startua 0x%lx with len 0x%x\n", index, newstartua, p->fmap[index].len);
+
+  return 0;
 }
 
 uint64
@@ -689,6 +806,7 @@ sys_munmap(void)
     endua = baseaddr;
   }
 
+  //Step 3: Write back in demand.
   if (writeback)
   {
     struct file *f = p->fmap[index].f;
@@ -696,13 +814,26 @@ sys_munmap(void)
     if (!(f->writable))
       panic("sys_munmap: Supposed to writeback but f is not writable");
 
-    //TODO: Check whether the following explanation makes sense. Do we really need to reset off?
-    //_v1(p) calls `fileread()` which modifies f->off.
-    //So we need to reset it to 0 once we decide to write back.
-    f->off = 0;
+    //Ex. munmap(p+PGSIZE, PGSIZE)
+    //offset = p+PGSIZE - p = PGSIZE
+    //offset is then used to be applied to the file position,
+    //to match the offset in mmap region.
+    int offset = addr - p->fmap[index].originalstartua;
+    //In this iteration, still assume we write from offset to eof.
+    int nbytes = f->ip->size - offset;
+    //Given a `struct file *f`, `vaddr_t addr`, `uint64 offset` and `int n`, 
+    //the function writes `nbytes` bytes from `addr` into the file `f`, 
+    //starting from offset `offset`.
+    printf(
+      "mmapwrite: from addr 0x%lx, at offset 0x%x, for 0x%x bytes\n",
+      addr, offset, nbytes
+    );
+    printf("original startua: 0x%lx\n", p->fmap[index].originalstartua);
+    int ret = mmapwrite(f, addr, offset, nbytes);
+
     //NOTE: `filewrite()` is not supposed to increment file size.
     //So we need to fetch the size and write back the whole file.
-    int ret = filewriteback(f, p->fmap[index].originalstartua, f->ip->size);
+    //int ret = filewriteback(f, p->fmap[index].originalstartua, f->ip->size);
     if (ret < 0)
       panic("sys_munmap: file writeback failed");
   }

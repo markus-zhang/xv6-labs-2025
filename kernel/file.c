@@ -240,3 +240,43 @@ filewriteback(struct file *f, uint64 addr, int n)
   }
   return ret;
 }
+
+
+int
+mmapwrite(struct file *f, vaddr_t addr, int offset, int nbytes)
+{
+  int r, ret = 0;
+
+  // write a few blocks at a time to avoid exceeding
+  // the maximum log transaction size, including
+  // i-node, indirect block, allocation blocks,
+  // and 2 blocks of slop for non-aligned writes.
+  int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+  int i = 0;
+  while(i < nbytes){
+    int n1 = nbytes - i;
+    if(n1 > max)
+      n1 = max;
+
+    begin_op();
+    ilock(f->ip);
+    //Use special writebacki function
+    vaddr_t src = addr + i;
+    if ((r = writebacki(f->ip, 1, src, offset, n1)) > 0)
+    {
+      offset += r;
+    }
+    iunlock(f->ip);
+    end_op();
+
+    if(r != n1){
+      // error from writebacki
+      // printf("filewriteback: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
+      break;
+    }
+    i += r;
+  }
+  ret = (i == nbytes ? nbytes : -1);
+
+  return ret;
+}

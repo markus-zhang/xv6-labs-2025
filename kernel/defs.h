@@ -41,6 +41,7 @@ int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
 int             filewriteback(struct file*, uint64, int n);
+int             mmapwrite(struct file *f, vaddr_t addr, int offset, int nbytes);
 
 // fs.c
 void            fsinit(int);

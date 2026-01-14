@@ -819,7 +819,14 @@ sys_munmap(void)
     //A second offset, which is the offset of the addr to the start of mmap region,
     //is calculated as offset = p+PGSIZE - p = PGSIZE.
     //Both offsets are then added to be applied to the file position.
-    int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
+
+    printf(
+      "fmap offset 0x%x, addr 0x%lx, startua 0x%lx\n",
+      p->fmap[index].offset, addr, p->fmap[index].startua
+    );
+    int offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
+    // int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
+
     //In this iteration, still assume we write from offset to eof.
     //TODO: Why are we writing back full size, instead of len? Check the doc.
     int nbytes = f->ip->size - offset;
@@ -830,7 +837,7 @@ sys_munmap(void)
       "mmapwrite: from addr 0x%lx, at offset 0x%x, for 0x%x bytes\n",
       addr, offset, nbytes
     );
-    printf("original startua: 0x%lx\n", p->fmap[index].originalstartua);
+    DPRINTF("original startua: 0x%lx\n", p->fmap[index].originalstartua);
     int ret = mmapwrite(f, addr, offset, nbytes);
 
     //NOTE: `filewrite()` is not supposed to increment file size.
@@ -860,10 +867,15 @@ sys_munmap(void)
   //Otherwise, simply increment startua
   else
   {
+    //NOTE: This implementation only supports head/tail unmap.
+    //It does not support splitting the mmap region into 2 or more subregions.
+    //If the tail is unmmapped, no need to update offset.
+    //If the head is unmmapped, move offset to original offset + len
+    if (baseaddr == p->fmap[index].startua)
+      p->fmap[index].offset += len;
+
     p->fmap[index].startua = newstartua;
     p->fmap[index].len -= len;
-    //TODO: What if we update p->fmap[index].offset? Check the doc.
-    //It makes the calculation of offset ^ easier.
   }
 
   DPRINTF("sys_munmap: release 0x%x bytes at addr %p\n", len, (void *)baseaddr);

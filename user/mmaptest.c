@@ -12,6 +12,7 @@ void fork_test();
 void more_test();
 void reverse_test();
 void write_test();
+void largefile_test();
 char buf[PGSIZE];
 
 #define MAP_FAILED ((char *) -1)
@@ -26,6 +27,7 @@ main(int argc, char *argv[])
   mmap_test();
   fork_test();
   more_test();
+  largefile_test();
   printf("mmaptest: all tests succeeded\n");
   exit(0);
 }
@@ -111,6 +113,184 @@ makefile(const char *f)
   }
   if (close(fd) == -1)
     err("close");
+}
+
+//Make a file of 20 pages.
+void
+makelargefile(const char *f)
+{
+  int i;
+  int n = PGSIZE/BSIZE;
+
+  unlink(f);
+  int fd = open(f, O_WRONLY | O_CREATE);
+  if (fd == -1)
+    err("open");
+  char ch = 'A';
+  //Write 20 page, each page a letter, from 'A' to 'T'.
+  for (i = 0; i < 20 * n; i++) 
+  {
+    //Increment ch for each page, not each block.
+    memset(buf, ch + i/n, BSIZE);
+    if (write(fd, buf, BSIZE) != BSIZE)
+      err("write 0 makefile");
+  }
+
+  if (close(fd) == -1)
+    err("close");
+
+  fd = open(f, O_RDONLY);
+  if (fd == -1)
+    err("open");
+
+  //Inspect the first char of each page.
+  //Should print ABCDEFGHIJKLMNOPQRST in console.
+  for (i = 0; i < 20; i++)
+  {
+    read(fd, buf, PGSIZE);
+    printf("%c", buf[0]);
+  }
+  printf("\n");
+  printf("makelargefile: OK\n");
+}
+
+void
+largefile_test(void)
+{
+  int fd;
+  const char * const f = "mmap_large.dur";
+
+  //Create large file of 20 pages.
+  makelargefile(f);
+
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (1)");
+
+  //Test 1: mmap the 3rd page -- all 'C'.
+  printf("largefile test 1: mmap the 3rd page...\n");
+  char *p = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd, 2*PGSIZE);
+  if (p == MAP_FAILED)
+    err("mmap (1)");
+  // printf("*p is: %c\n", *p);
+  if (*p != 'C')
+    err("mmap (1) the wrong page! Expecting 'C'.");
+
+  if (munmap(p, PGSIZE) == -1)
+    err("munmap (1)");
+
+  printf("largefile test 1: OK\n");
+
+  //Test 2: call read() to load the file. This moves f->off.
+  //This should not impact mmap()
+  printf("largefile test 2: read the 1st page...\n");
+  if(read(fd, buf, PGSIZE) != PGSIZE) 
+    err("read (1)");
+
+  if (buf[1] != 'A')
+    err("read (1) the wrong page! Expecting 'A'");
+
+  printf("largefile test 2: OK\n");
+
+  //Test 3: run test 1 again, f->off changed but should not impact test 1.
+  printf("largefile test 3: mmap the 3rd page...\n");
+  p = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd, 2*PGSIZE);
+  if (p == MAP_FAILED)
+    err("mmap (2)");
+  if (*p != 'C')
+    err("mmap (2) the wrong page! Expecting 'C'.");
+
+  if (munmap(p, PGSIZE) == -1)
+    err("munmap (2)");
+
+  printf("largefile test 3: OK\n");
+
+  close(fd);
+
+  //Test 4: mmap, writeback the last page with 'Z' in munmap,
+  //then mmap again to double check whether the writeback is correct.
+  printf("largefile test 4: mmap the last page and write back\n");
+  //Need to reopen as RW
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open (1)");
+
+  p = mmap(0, PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 19*PGSIZE);
+  if (p == MAP_FAILED)
+    err("mmap (3)");
+  if (*p != 'T')
+    err("mmap (3) the wrong page! Expecting 'T'.");
+
+  memset((void *)p, 'Z', PGSIZE);
+
+  if (munmap(p, PGSIZE) == -1)
+    err("munmap (3)");
+
+  close(fd);
+
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (1)");
+
+  p = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd, 19*PGSIZE);
+  if (p == MAP_FAILED)
+    err("mmap (4)");
+
+  int n = 0;
+  for (; n < PGSIZE; n++)
+  {
+    // printf("%c", *(p + n));
+    if (*(p + n) != 'Z')
+      err("writeback failed! Expecting 'Z'.");
+  }
+  printf("\n");
+
+  if (munmap(p, PGSIZE) == -1)
+    err("munmap (4)");
+
+  printf("largefile test 4: OK\n");
+  close(fd);
+
+  //Test 5: mmap, writeback two pages with '@' in munmap,
+  //then mmap again to double check whether the writeback is correct.
+  printf("largefile test 5: mmap two sequential pages and write back\n");
+  //Need to reopen as RW
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open (1)");
+
+  p = mmap(0, 2*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 15*PGSIZE);
+  if (p == MAP_FAILED)
+    err("mmap (5)");
+
+  memset((void *)p, '@', 2*PGSIZE);
+
+  if (munmap(p, PGSIZE) == -1)
+    err("munmap (5)");
+
+  //Previous munmap should move startua by PGSIZE
+  if (munmap(p+PGSIZE, PGSIZE) == -1)
+    err("munmap (6)");
+
+  close(fd);
+
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (1)");
+
+  p = mmap(0, 2*PGSIZE, PROT_READ, MAP_PRIVATE, fd, 15*PGSIZE);
+  if (p == MAP_FAILED)
+    err("mmap (6)");
+
+  for (n = 0; n < 2*PGSIZE; n++)
+  {
+    // printf("%c", *(p + n));
+    if (*(p + n) != '@')
+      err("writeback failed! Expecting '@'.");
+  }
+  printf("\n");
+
+  if (munmap(p, 2*PGSIZE) == -1)
+    err("munmap (7)");
+
+  printf("largefile test 5: OK\n");
+  close(fd);
+
 }
 
 //Check 2nd page first

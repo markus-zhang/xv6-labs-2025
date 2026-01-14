@@ -556,11 +556,11 @@ sys_mmap(void)
   ASSERT((len > 0) && (len % PGSIZE == 0));
   ASSERT((offset >= 0) && (offset % PGSIZE == 0));
 
-  DPRINTF("sys_mmap: len is %d\n", len);
+  DPRINTF("sys_mmap: len is 0x%x\n", len);
   DPRINTF("sys_mmap: prot is %d\n", prot);
   DPRINTF("sys_mmap: flags is %d\n", flags);
   DPRINTF("sys_mmap: fd is %d\n", fd);
-  DPRINTF("sys_mmap: offset is %d\n", offset);
+  DPRINTF("sys_mmap: offset is 0x%x\n", offset);
 
   //Step 2: Lazy allocate len/PGSIZE pages for mmap
   struct proc *p = myproc();
@@ -814,11 +814,12 @@ sys_munmap(void)
     if (!(f->writable))
       panic("sys_munmap: Supposed to writeback but f is not writable");
 
-    //Ex. munmap(p+PGSIZE, PGSIZE)
-    //offset = p+PGSIZE - p = PGSIZE
-    //offset is then used to be applied to the file position,
-    //to match the offset in mmap region.
-    int offset = addr - p->fmap[index].originalstartua;
+    //Ex. munmap(p+PGSIZE, PGSIZE), and the whole mmap region has an offset,
+    //which is saved in p->fmap[index].offset.
+    //A second offset, which is the offset of the addr to the start of mmap region,
+    //is calculated as offset = p+PGSIZE - p = PGSIZE.
+    //Both offsets are then added to be applied to the file position.
+    int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
     //In this iteration, still assume we write from offset to eof.
     int nbytes = f->ip->size - offset;
     //Given a `struct file *f`, `vaddr_t addr`, `uint64 offset` and `int n`, 

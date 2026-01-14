@@ -525,6 +525,9 @@ findmmapwithin(struct proc * p, vaddr_t addr)
   int i = 0;
   for (; i < MAXMMAP; i++)
   {
+    //Use startua to track its change. If startua has moved,
+    //the part of the region cut off should NOT be munmap-able again.
+    //e.g. execute munmap(p, PGSIZE) twice should not be allowed.
     vaddr_t startua = p->fmap[i].startua;
     vaddr_t endua = p->fmap[i].startua + p->fmap[i].len;
     if ((addr >= startua) && (addr < endua))
@@ -537,7 +540,7 @@ findmmapwithin(struct proc * p, vaddr_t addr)
 //Stage 2 - Start implementing write back (in sys_munmap())
 //va is always userland virtual address
 uint64
-mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
+mmapfault2(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
 {
   // printf("mmapfault: r_scause() is %ld\n", r_scause());
   ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
@@ -586,12 +589,81 @@ mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
     return 0;
   }
 
+  //FIXME: Use the fmap entry offset instead.
   //Similar to fileread() but with an offset.
   //What if user program does NOT read in order? Read Trial 5 in lab note.
   //We should be able to get base va from fmap and manually calculate offset,
   //and then pass the offset to readi() so it reads the page caller wants.
   vaddr_t basefmava = p->fmap[fmapidx].startua;
   int vaoff = baseva - basefmava;
+  //I can't use fileread() because it doesn't have an argument for the offset.
+  //Instead it uses f->off. This is fine for sequential reads.
+  //But difficult if we want to read arbitrary pages (e.g. 10th page -> 3rd page).
+  ilock(f->ip);
+  int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+  //Do not increment the offset as in fileread(), because we don't use it.
+  //Instead we calculate offset as the diff between startua and baseva.
+  iunlock(f->ip);
+  if (bytesread <= 0)
+    panic("mmapfault: fileread failed!");
+
+  // printf("mmapfault: read 0x%x bytes\n", bytesread);
+  return mem;
+}
+
+uint64
+mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
+{
+  // printf("mmapfault: r_scause() is %ld\n", r_scause());
+  ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
+  ASSERT(pagetable != 0);
+  //mmap region always lower than TRAMPOLINE and at/above MMAPSTART.
+  ASSERT(va < TRAMPOLINE);
+  ASSERT(va >= MMAPSTART);
+  //technically a boolean value.
+  ASSERT((read == 0) || (read == 1));
+
+  //For read fault, should load file into va.
+  //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
+  //va = 0x5400, then the page starts from 0x5000 to 0x6000
+  vaddr_t baseva = PGROUNDDOWN(va);
+  struct proc *p = myproc();
+
+  //if file opened as RO but scause is 15, return 0,
+  //to trigger a fatal trap in usertrap()
+  //if (r_scause() == 15)
+  if(!read)
+    if((p->fmap[fmapidx].prot & PROT_WRITE) == 0)
+      return 0;
+
+  struct file *f = p->fmap[fmapidx].f;
+  // printf("mmapfault: ref of file %lx\n", (uint64)f);
+  if (!f)
+    panic("mmapfault: file is NULL");
+
+  paddr_t mem = (uint64)kalloc();
+  if (mem == 0)
+    return 0;
+  memset((void *)mem, 0, PGSIZE);
+  //I think we have to enable PTE_W even for readonly mmap regions
+  //becuase we need to write into it for mmap.
+  //RO/RW should be implemented by looking at p->fmap.addr.prot
+  if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
+  {
+    kfree((void *)mem);
+    return 0;
+  }
+
+  //Similar to fileread() but with an offset.
+  //What if user program does NOT read in order? Read Trial 5 in lab note.
+  //We should be able to get base va from fmap and manually calculate offset,
+  //and then pass the offset to readi() so it reads the page caller wants.
+
+  vaddr_t basefmava = p->fmap[fmapidx].startua;
+  //p->fmap[fmapidx].offset is the offset of the whole mmap region to the file start.
+  //baseva - basefmava is the offset of this page to the mmap region start.
+  int vaoff = p->fmap[fmapidx].offset + (baseva - basefmava);
+
   //I can't use fileread() because it doesn't have an argument for the offset.
   //Instead it uses f->off. This is fine for sequential reads.
   //But difficult if we want to read arbitrary pages (e.g. 10th page -> 3rd page).

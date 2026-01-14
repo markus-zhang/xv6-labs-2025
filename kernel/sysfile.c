@@ -821,6 +821,7 @@ sys_munmap(void)
     //Both offsets are then added to be applied to the file position.
     int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
     //In this iteration, still assume we write from offset to eof.
+    //TODO: Why are we writing back full size, instead of len? Check the doc.
     int nbytes = f->ip->size - offset;
     //Given a `struct file *f`, `vaddr_t addr`, `uint64 offset` and `int n`, 
     //the function writes `nbytes` bytes from `addr` into the file `f`, 
@@ -861,6 +862,8 @@ sys_munmap(void)
   {
     p->fmap[index].startua = newstartua;
     p->fmap[index].len -= len;
+    //TODO: What if we update p->fmap[index].offset? Check the doc.
+    //It makes the calculation of offset ^ easier.
   }
 
   DPRINTF("sys_munmap: release 0x%x bytes at addr %p\n", len, (void *)baseaddr);

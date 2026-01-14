@@ -416,10 +416,10 @@ copyinback(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    //Ignore unmapped pages
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
+    //Ignore unmapped pages
     if(pa0)
       memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 

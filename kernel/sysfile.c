@@ -18,6 +18,9 @@
 #include "debug.h"
 #include "memlayout.h"
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#define absdiff(a, b) ((a) < (b) ? ((b) - (a)) : ((a) - (b)))
+
 // static uint64 is_mmap(uint64 va);
 static int ffmmap(struct proc * p);
 
@@ -807,7 +810,7 @@ sys_munmap(void)
   }
 
   //Step 3: Write back in demand.
-  if (writeback)
+  if(writeback)
   {
     struct file *f = p->fmap[index].f;
     //printf("sys_munmap: writing back 0x%x bytes for addr %p\n", f->ip->size, (void *)baseaddr);
@@ -820,20 +823,25 @@ sys_munmap(void)
     //is calculated as offset = p+PGSIZE - p = PGSIZE.
     //Both offsets are then added to be applied to the file position.
 
-    printf(
+    DPRINTF(
       "fmap offset 0x%x, addr 0x%lx, startua 0x%lx\n",
       p->fmap[index].offset, addr, p->fmap[index].startua
     );
+    //After the previous munmap, both startua and offset in the fmap entry are updated.
     int offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
     // int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
 
     //In this iteration, still assume we write from offset to eof.
     //TODO: Why are we writing back full size, instead of len? Check the doc.
-    int nbytes = f->ip->size - offset;
+
+    // int nbytes = f->ip->size - offset;
+    int nbytes = min(len, f->ip->size - offset);
+    printf("munmap: Saved %d bytes of writing back.\n", absdiff(len, f->ip->size - offset));
+
     //Given a `struct file *f`, `vaddr_t addr`, `uint64 offset` and `int n`, 
     //the function writes `nbytes` bytes from `addr` into the file `f`, 
     //starting from offset `offset`.
-    printf(
+    DPRINTF(
       "mmapwrite: from addr 0x%lx, at offset 0x%x, for 0x%x bytes\n",
       addr, offset, nbytes
     );

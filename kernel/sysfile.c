@@ -760,6 +760,7 @@ sys_munmap(void)
   //We use findmmapwithin() so addr is not required to be aligned to PGSIZE.
   //TODO: However munmap() in Linux requires this.
   ASSERT(addr % PGSIZE == 0);
+  //Redundant as addr is guaranteed to be page aligned.
   vaddr_t baseaddr = PGROUNDDOWN(addr);
 
   //According to the test program, len should be aligned to PGSIZE, 
@@ -813,7 +814,7 @@ sys_munmap(void)
   if(writeback)
   {
     struct file *f = p->fmap[index].f;
-    //printf("sys_munmap: writing back 0x%x bytes for addr %p\n", f->ip->size, (void *)baseaddr);
+    DPRINTF("sys_munmap: writing back 0x%x bytes for addr %p\n", f->ip->size, (void *)baseaddr);
     if (!(f->writable))
       panic("sys_munmap: Supposed to writeback but f is not writable");
 
@@ -823,16 +824,12 @@ sys_munmap(void)
     //is calculated as offset = p+PGSIZE - p = PGSIZE.
     //Both offsets are then added to be applied to the file position.
 
-    DPRINTF(
-      "fmap offset 0x%x, addr 0x%lx, startua 0x%lx\n",
-      p->fmap[index].offset, addr, p->fmap[index].startua
-    );
+    DPRINTF("fmap offset 0x%x, addr 0x%lx, startua 0x%lx\n", p->fmap[index].offset, addr, p->fmap[index].startua);
     //After the previous munmap, both startua and offset in the fmap entry are updated.
     int offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
     // int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
 
-    //In this iteration, still assume we write from offset to eof.
-    //TODO: Why are we writing back full size, instead of len? Check the doc.
+    //Writing back nbytes. Read lab_mmap_add_notes.md for the reason of this min().
 
     // int nbytes = f->ip->size - offset;
     int nbytes = min(len, f->ip->size - offset);
@@ -841,16 +838,11 @@ sys_munmap(void)
     //Given a `struct file *f`, `vaddr_t addr`, `uint64 offset` and `int n`, 
     //the function writes `nbytes` bytes from `addr` into the file `f`, 
     //starting from offset `offset`.
-    DPRINTF(
-      "mmapwrite: from addr 0x%lx, at offset 0x%x, for 0x%x bytes\n",
-      addr, offset, nbytes
-    );
+    DPRINTF("mmapwrite: from addr 0x%lx, at offset 0x%x, for 0x%x bytes\n", addr, offset, nbytes);
     DPRINTF("original startua: 0x%lx\n", p->fmap[index].originalstartua);
+
     int ret = mmapwrite(f, addr, offset, nbytes);
 
-    //NOTE: `filewrite()` is not supposed to increment file size.
-    //So we need to fetch the size and write back the whole file.
-    //int ret = filewriteback(f, p->fmap[index].originalstartua, f->ip->size);
     if (ret < 0)
       panic("sys_munmap: file writeback failed");
   }
@@ -872,7 +864,7 @@ sys_munmap(void)
     p->fmap[index].originalstartua = 0;
     p->totalvma -= 1;
   }
-  //Otherwise, simply increment startua
+  //Otherwise, simply increment startua.
   else
   {
     //NOTE: This implementation only supports head/tail unmap.

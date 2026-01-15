@@ -254,7 +254,10 @@ In this functio call, `offset` is calculated as 2 + 1 = 3. We didn't update `p->
 
 `nbytes` is calculated as 20 pages - offset (3 pages) = 17 pages.
 
+## TODO List
 
+- Write additional tests to test over-mmap. That is, deliberately mmap over EOF and check whether mmap and munmap works properly. It should not impact writeback, and any overmapped region should be filled with `0`. Writing back into the overmapped region should either be ignored, or trigger a panic.
 
-The other change I made is to reduce the number of pages written back. 
+- Convert writeback to a loop per page, without using the dirty bit. The current implementation "seeks" to `BOF + offset`, then copy `nbytes` from user VA `addr` into the file. Basically, break down `nbytes` into chunks of 1 page or less. Note that one of the chunks could be a small chunk, which is under 1 page, if `nbytes` cannot be divided by `PGSIZE`. It needs to pass all previous tests. Write more tests to check whether writing a small chunk spills over to the rest of the page.
 
+- Ask ChatGPT to recommend more tests. The more tests we write, the more familiar we are with the code, and we will have fewer bugs.

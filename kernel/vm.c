@@ -663,17 +663,22 @@ mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
   //p->fmap[fmapidx].offset is the offset of the whole mmap region to the file start.
   //baseva - basefmava is the offset of this page to the mmap region start.
   int vaoff = p->fmap[fmapidx].offset + (baseva - basefmava);
+  
+  //NOTE: We now allow over-mmap, i.e. user programs can map past EOF.
+  //readi() is only called if the requested page is backed by the file.
+  //For over-mmapped pages, simply return a whole page of 0.
+  //vaoff is actually the absolute offset from BOF, so we only need to check it against sz
 
-  //I can't use fileread() because it doesn't have an argument for the offset.
-  //Instead it uses f->off. This is fine for sequential reads.
-  //But difficult if we want to read arbitrary pages (e.g. 10th page -> 3rd page).
-  ilock(f->ip);
-  int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
-  //Do not increment the offset as in fileread(), because we don't use it.
-  //Instead we calculate offset as the diff between startua and baseva.
-  iunlock(f->ip);
-  if (bytesread <= 0)
-    panic("mmapfault: fileread failed!");
+  if (vaoff <= f->ip->size)
+  {
+    ilock(f->ip);
+    int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+    //Do not increment the offset as in fileread(), because we don't use it.
+    //Instead we calculate offset as the diff between startua and baseva.
+    iunlock(f->ip);
+    if (bytesread <= 0)
+      panic("mmapfault: fileread failed!");
+  }
 
   // printf("mmapfault: read 0x%x bytes\n", bytesread);
   return mem;

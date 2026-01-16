@@ -211,7 +211,7 @@ largefile_test(void)
   printf("largefile test 4: mmap the last page and write back\n");
   //Need to reopen as RW
   if ((fd = open(f, O_RDWR)) == -1)
-    err("open (1)");
+    err("open (2)");
 
   p = mmap(0, PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 19*PGSIZE);
   if (p == MAP_FAILED)
@@ -227,7 +227,7 @@ largefile_test(void)
   close(fd);
 
   if ((fd = open(f, O_RDONLY)) == -1)
-    err("open (1)");
+    err("open (3)");
 
   p = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd, 19*PGSIZE);
   if (p == MAP_FAILED)
@@ -253,7 +253,7 @@ largefile_test(void)
   printf("largefile test 5: mmap two sequential pages and write back\n");
   //Need to reopen as RW
   if ((fd = open(f, O_RDWR)) == -1)
-    err("open (1)");
+    err("open (4)");
 
   p = mmap(0, 2*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 15*PGSIZE);
   if (p == MAP_FAILED)
@@ -271,7 +271,7 @@ largefile_test(void)
   close(fd);
 
   if ((fd = open(f, O_RDONLY)) == -1)
-    err("open (1)");
+    err("open (5)");
 
   p = mmap(0, 2*PGSIZE, PROT_READ, MAP_PRIVATE, fd, 15*PGSIZE);
   if (p == MAP_FAILED)
@@ -291,6 +291,40 @@ largefile_test(void)
   printf("largefile test 5: OK\n");
   close(fd);
 
+  /*
+  //Test 6: over-mmap 3 pages after EOF, then munmap to write back.
+  //then mmap again to double check whether the writeback is correct.
+  printf("largefile test 5: mmap two sequential pages and write back\n");
+  //Need to reopen as RW
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open (6)");
+
+  p = mmap(0, 5*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 18*PGSIZE);
+  if (p == MAP_FAILED)
+    err("mmap (6)");
+
+  if(*(p+4*PGSIZE) != 0)
+    err("overmapped page is not zero");
+
+  memset((void *)p, '#', 5*PGSIZE);
+
+  //Write back should only change the 2 pages within the file. The other 3 pages remain as 0.
+  if (munmap(p, 5*PGSIZE) == -1)
+    err("munmap (6)");
+
+  int pid;
+
+  if((pid = fork()) < 0)
+    err("fork");
+  if(pid == 0) {
+    //Child proc should see the same mmap region as the parent proc.
+    if(munmap(p, PGSIZE) == -1) // just the first page
+      err("munmap (7)");
+    if(*p != '#')
+      err("child proc should see #");
+    exit(0); // tell the parent that the mapping looks OK.
+  }
+  */
 }
 
 //Check 2nd page first

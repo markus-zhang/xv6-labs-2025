@@ -256,8 +256,10 @@ In this functio call, `offset` is calculated as 2 + 1 = 3. We didn't update `p->
 
 ## TODO List
 
-- Write additional tests to test over-mmap. That is, deliberately mmap over EOF and check whether mmap and munmap works properly. It should not impact writeback, and any overmapped region should be filled with `0`. Writing back into the overmapped region should either be ignored, or trigger a panic.
+- Write additional tests to test over-mmap. That is, deliberately mmap over EOF and check whether mmap and munmap works properly. It should not impact writeback, and any overmapped region should be filled with `0`, as Linux. Writing back into the overmapped region should either be ignored, or trigger a panic. For this test to work, I also need to modify `mmapfault()` or its lower routines to allow read into regions that is not covered by the file, and "read" 0 whenever they are requested by the user program.
 
 - Convert writeback to a loop per page, without using the dirty bit. The current implementation "seeks" to `BOF + offset`, then copy `nbytes` from user VA `addr` into the file. Basically, break down `nbytes` into chunks of 1 page or less. Note that one of the chunks could be a small chunk, which is under 1 page, if `nbytes` cannot be divided by `PGSIZE`. It needs to pass all previous tests. Write more tests to check whether writing a small chunk spills over to the rest of the page.
 
 - Ask ChatGPT to recommend more tests. The more tests we write, the more familiar we are with the code, and we will have fewer bugs.
+
+- Modify the code to use dirty bits. Don't forget to write a few syscalls (check the branch `mmap_dirty`) to prove that the dirty bit saves a lot of writebacks. Write more tests...more tests...

@@ -826,14 +826,17 @@ sys_munmap(void)
 
     DPRINTF("fmap offset 0x%x, addr 0x%lx, startua 0x%lx\n", p->fmap[index].offset, addr, p->fmap[index].startua);
     //After the previous munmap, both startua and offset in the fmap entry are updated.
-    int offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
+    vaddr_t offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
     // int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
 
     //Writing back nbytes. Read lab_mmap_add_notes.md for the reason of this min().
 
-    // int nbytes = f->ip->size - offset;
-    int nbytes = min(len, f->ip->size - offset);
-    printf("munmap: Saved %d bytes of writing back.\n", absdiff(len, f->ip->size - offset));
+    //Overmmap region: offset >= filesize. Be aware of this situation.
+    //Because both f->ip->size and offset are unsigned integers, the result overflows for negative numbers.
+    int nbytes = 0;
+    if (offset < f->ip->size)
+      nbytes = min(len, f->ip->size - offset);
+    DPRINTF("munmap: Saved %d bytes of writing back.\n", absdiff(len, f->ip->size - offset));
 
     //Given a `struct file *f`, `vaddr_t addr`, `uint64 offset` and `int n`, 
     //the function writes `nbytes` bytes from `addr` into the file `f`, 
@@ -841,10 +844,19 @@ sys_munmap(void)
     DPRINTF("mmapwrite: from addr 0x%lx, at offset 0x%x, for 0x%x bytes\n", addr, offset, nbytes);
     DPRINTF("original startua: 0x%lx\n", p->fmap[index].originalstartua);
 
-    int ret = mmapwrite(f, addr, offset, nbytes);
+    //Do not write back if it is in an overmmapped region (> EOF)
+    if (nbytes > 0)
+    {
+      int ret = mmapwrite(f, addr, offset, nbytes);
 
-    if (ret < 0)
-      panic("sys_munmap: file writeback failed");
+      if (ret < 0)
+      {
+        DPRINTF("offset: 0x%lx, nbytes: 0x%x\n", offset, nbytes);
+        panic("sys_munmap: file writeback failed");
+      }
+    }
+    else
+      DPRINTF("Overmapped region reached! No writeback offset @ 0x%lx\n", offset);
   }
 
   //Step 3: Unmap the region

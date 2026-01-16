@@ -291,10 +291,9 @@ largefile_test(void)
   printf("largefile test 5: OK\n");
   close(fd);
 
-  /*
   //Test 6: over-mmap 3 pages after EOF, then munmap to write back.
   //then mmap again to double check whether the writeback is correct.
-  printf("largefile test 5: mmap two sequential pages and write back\n");
+  printf("largefile test 6: over-mmap test\n");
   //Need to reopen as RW
   if ((fd = open(f, O_RDWR)) == -1)
     err("open (6)");
@@ -308,23 +307,39 @@ largefile_test(void)
 
   memset((void *)p, '#', 5*PGSIZE);
 
-  //Write back should only change the 2 pages within the file. The other 3 pages remain as 0.
-  if (munmap(p, 5*PGSIZE) == -1)
-    err("munmap (6)");
+  if(*p != '#')
+    err("should see # for mmapped region.");
+
+  //We cannot prevent writing into the mmap region, unless we let the kernel panic in mmapfault().
+  //Plus even if we panic in mmapfault(), if user program reads this page first, then write,
+  //it can bypass mmapfault() because there is no need to mmapfault() again for a page already read.
+  if(*(p+3*PGSIZE) != '#')
+    err("should see # for over-mmapped region, too.");
 
   int pid;
 
   if((pid = fork()) < 0)
     err("fork");
   if(pid == 0) {
-    //Child proc should see the same mmap region as the parent proc.
-    if(munmap(p, PGSIZE) == -1) // just the first page
-      err("munmap (7)");
+    //Child proc needs to call mmapfault() again to load from file (or 0),
+    //Thus it doesn't see the changes to *p.
+    //FIXME: Since this is mmapped as MAP_SHARED, child proc should see the changes to *p.
     if(*p != '#')
-      err("child proc should see #");
+      err("child proc should see # for mmapped region.");
+    if(*(p+3*PGSIZE) != 0)
+      err("child proc should see 0 for over-mmapped region.");
     exit(0); // tell the parent that the mapping looks OK.
   }
-  */
+
+  int status = -1;
+  wait(&status);
+
+  //Write back should not change over-mmapped regions.
+  if (munmap(p+3*PGSIZE, 2*PGSIZE) == -1)
+    err("munmap (6)");
+
+  printf("largefile test 6: OK\n");
+  close(fd);
 }
 
 //Check 2nd page first

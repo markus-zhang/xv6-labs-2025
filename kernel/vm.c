@@ -662,14 +662,15 @@ mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
   vaddr_t basefmava = p->fmap[fmapidx].startua;
   //p->fmap[fmapidx].offset is the offset of the whole mmap region to the file start.
   //baseva - basefmava is the offset of this page to the mmap region start.
-  int vaoff = p->fmap[fmapidx].offset + (baseva - basefmava);
+  vaddr_t vaoff = p->fmap[fmapidx].offset + (baseva - basefmava);
   
   //NOTE: We now allow over-mmap, i.e. user programs can map past EOF.
   //readi() is only called if the requested page is backed by the file.
   //For over-mmapped pages, simply return a whole page of 0.
-  //vaoff is actually the absolute offset from BOF, so we only need to check it against sz
+  //vaoff is actually the absolute offset from BOF (readi() uses it to check out of bound),
+  //so we only need to check it against sz.
 
-  if (vaoff <= f->ip->size)
+  if (vaoff < f->ip->size)
   {
     ilock(f->ip);
     int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
@@ -678,6 +679,11 @@ mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
     iunlock(f->ip);
     if (bytesread <= 0)
       panic("mmapfault: fileread failed!");
+  }
+  //For debugging only.
+  else
+  {
+    DPRINTF("mmapfault: overmapped region 0x%lx hit!\n", vaoff);
   }
 
   // printf("mmapfault: read 0x%x bytes\n", bytesread);

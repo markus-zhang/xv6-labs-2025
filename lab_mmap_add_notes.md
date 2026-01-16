@@ -1,3 +1,15 @@
+## TODO List
+
+[X] Write additional tests to test over-mmap. That is, deliberately mmap over EOF and check whether mmap and munmap works properly. It should not impact writeback, and any overmapped region should be filled with `0`, as Linux. ~~Writing back into the overmapped region should either be ignored, or trigger a panic.~~ Writing back into the overmapped region is allowed in Linux. For this test to work, I also need to modify `mmapfault()` or its lower routines to allow read into regions that is not covered by the file, and "read" 0 whenever they are requested by the user program.
+
+[ ] (Sub TODO from above) Other proc should see the changes made to a MAP_SHARED mmap region without munmap() being called. This probably need some significant changes to the code, though, as right now writeback only occurs in munmap(). How can I write back immedaitely?
+
+[ ] Convert writeback to a loop per page, without using the dirty bit. The current implementation "seeks" to `BOF + offset`, then copy `nbytes` from user VA `addr` into the file. Basically, break down `nbytes` into chunks of 1 page or less. Note that one of the chunks could be a small chunk, which is under 1 page, if `nbytes` cannot be divided by `PGSIZE`. It needs to pass all previous tests. Write more tests to check whether writing a small chunk spills over to the rest of the page.
+
+[ ] Ask ChatGPT to recommend more tests. The more tests we write, the more familiar we are with the code, and we will have fewer bugs.
+
+[ ] Modify the code to use dirty bits. Don't forget to write a few syscalls (check the branch `mmap_dirty`) to prove that the dirty bit saves a lot of writebacks. Write more tests...more tests...
+
 ## Additional Notes
 
 ### Purpose
@@ -253,13 +265,3 @@ if (munmap(p, PGSIZE) == -1)
 In this functio call, `offset` is calculated as 2 + 1 = 3. We didn't update `p->fmap[index].offset` so it is still 2, but `addr` is one page away from `p->fmap[index].originalstartua`, so the total is 3. I'm thinking, is it better simply to update `p->fmap[index].offset`? So we don't need to add the weird `(addr - p->fmap[index].originalstartua)`.
 
 `nbytes` is calculated as 20 pages - offset (3 pages) = 17 pages.
-
-## TODO List
-
-- Write additional tests to test over-mmap. That is, deliberately mmap over EOF and check whether mmap and munmap works properly. It should not impact writeback, and any overmapped region should be filled with `0`, as Linux. Writing back into the overmapped region should either be ignored, or trigger a panic. For this test to work, I also need to modify `mmapfault()` or its lower routines to allow read into regions that is not covered by the file, and "read" 0 whenever they are requested by the user program.
-
-- Convert writeback to a loop per page, without using the dirty bit. The current implementation "seeks" to `BOF + offset`, then copy `nbytes` from user VA `addr` into the file. Basically, break down `nbytes` into chunks of 1 page or less. Note that one of the chunks could be a small chunk, which is under 1 page, if `nbytes` cannot be divided by `PGSIZE`. It needs to pass all previous tests. Write more tests to check whether writing a small chunk spills over to the rest of the page.
-
-- Ask ChatGPT to recommend more tests. The more tests we write, the more familiar we are with the code, and we will have fewer bugs.
-
-- Modify the code to use dirty bits. Don't forget to write a few syscalls (check the branch `mmap_dirty`) to prove that the dirty bit saves a lot of writebacks. Write more tests...more tests...

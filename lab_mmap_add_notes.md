@@ -4,7 +4,7 @@
 
 [ ] (Sub TODO from above) Other proc should see the changes made to a MAP_SHARED mmap region without munmap() being called. This probably need some significant changes to the code, though, as right now writeback only occurs in munmap(). How can I write back immedaitely?
 
-[ ] Convert writeback to a loop per page, without using the dirty bit. The current implementation "seeks" to `BOF + offset`, then copy `nbytes` from user VA `addr` into the file. Basically, break down `nbytes` into chunks of 1 page or less. Note that one of the chunks could be a small chunk, which is under 1 page, if `nbytes` cannot be divided by `PGSIZE`. It needs to pass all previous tests. Write more tests to check whether writing a small chunk spills over to the rest of the page.
+[X] Convert writeback to a loop per page, without using the dirty bit. The current implementation "seeks" to `BOF + offset`, then copy `nbytes` from user VA `addr` into the file. Basically, break down `nbytes` into chunks of 1 page or less. Note that one of the chunks could be a small chunk, which is under 1 page, if `nbytes` cannot be divided by `PGSIZE`. It needs to pass all previous tests. Write more tests to check whether writing a small chunk spills over to the rest of the page.
 
 [ ] Ask ChatGPT to recommend more tests. The more tests we write, the more familiar we are with the code, and we will have fewer bugs.
 

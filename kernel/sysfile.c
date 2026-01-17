@@ -844,16 +844,48 @@ sys_munmap(void)
     DPRINTF("mmapwrite: from addr 0x%lx, at offset 0x%x, for 0x%x bytes\n", addr, offset, nbytes);
     DPRINTF("original startua: 0x%lx\n", p->fmap[index].originalstartua);
 
-    //Do not write back if it is in an overmmapped region (> EOF)
+    //Do not write back if it is in an overmmapped region (> EOF so nbytes keeps 0)
     if (nbytes > 0)
     {
-      int ret = mmapwrite(f, addr, offset, nbytes);
+      //TODO: Break down nbytes to PGSIZE, so that each mmapwrite() writes a full page if possible.
+      //Since addr is already aligned to page, we only need to worry about offset and nbytes.
+      //1) vaddr_t offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
+      //p->fmap[index].offset is aligned to page as confirmed in sys_mmap().
+      //startua is also defined as GiB aligned so definitely page aligned.
+      //So we can conclude that offset is aligned to page as well.
+      //2) We need to break down nbytes so that each write writes a maximum of PGSIZE bytes.
 
-      if (ret < 0)
+      // int ret = mmapwrite(f, addr, offset, nbytes);
+      // if (ret < 0)
+      // {
+      //   DPRINTF("offset: 0x%lx, nbytes: 0x%x\n", offset, nbytes);
+      //   panic("sys_munmap: file writeback failed");
+      // }
+      
+      int nbytesbackup = nbytes;
+      while (1)
       {
-        DPRINTF("offset: 0x%lx, nbytes: 0x%x\n", offset, nbytes);
-        panic("sys_munmap: file writeback failed");
+        int nbyteschunk = min(PGSIZE, nbytes);
+        printf("writeback: writing back 0x%x bytes at 0x%lx offset by 0x%lx.\n", nbyteschunk, addr, offset);
+        int ret = mmapwrite(f, addr, offset, nbyteschunk);
+
+        if (ret < 0)
+        {
+          DPRINTF("offset: 0x%lx, nbytes: 0x%x\n", offset, nbytes);
+          panic("sys_munmap: file writeback failed");
+        }
+        //Since we modify nbytes in place, make sure it is not used in the code after this loop.
+        nbytes -= nbyteschunk;
+        if (nbytes == 0)
+          break;
+
+        //We also need to update offset and addr, so that we don't write into/from the same place again and again.
+        //So make sure that we don't use offset/addr after this look. That DPRINT() is fine.
+        //Still, better to preserve offset/addr and use a copy instead.
+        offset += nbyteschunk;
+        addr += nbyteschunk;
       }
+      printf("writeback: in total wrote back 0x%x bytes.\n", nbytesbackup);
     }
     else
       DPRINTF("Overmapped region reached! No writeback offset @ 0x%lx\n", offset);

@@ -13,6 +13,7 @@ void more_test();
 void reverse_test();
 void write_test();
 void largefile_test();
+void multi_wb_test();
 char buf[PGSIZE];
 
 #define MAP_FAILED ((char *) -1)
@@ -24,10 +25,11 @@ main(int argc, char *argv[])
   // write_test();
   // exit(0);
 
-  mmap_test();
-  fork_test();
-  more_test();
-  largefile_test();
+  // mmap_test();
+  // fork_test();
+  // more_test();
+  // largefile_test();
+  multi_wb_test();
   printf("mmaptest: all tests succeeded\n");
   exit(0);
 }
@@ -340,6 +342,186 @@ largefile_test(void)
 
   printf("largefile test 6: OK\n");
   close(fd);
+}
+
+//Multiple writeback tests.
+//Technically we don't need extra tests for multiple write backs, but the more tests the more fun.
+void
+multi_wb_test(void)
+{
+  int fd;
+  const char * const f = "mmap_large.dur";
+
+  //Create large file of 20 pages.
+  makelargefile(f);
+
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open (1)");
+
+  //Test 1: mmap 4 pages starting from the 3rd fpage. Write back and reopen to check.
+  printf("***********************************************************************\n");
+  printf("Write back test 1: mmap 4 fpages, write back and check 2 of them.\n");
+  //Create mmap region for fpage 3-6.
+  char *p = mmap(0, 4*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 2*PGSIZE);
+
+  //Write the 1st mpage with '1'.
+  for (char *pp = p; pp < p + PGSIZE; pp++)
+  {
+    *pp = '1';
+  }
+
+  //Write the 2nd mpage with '2'.
+  for (char *pp = p + PGSIZE; pp < p + 2*PGSIZE; pp++)
+  {
+    *pp = '2';
+  }
+
+  //Write the 3rd mpage with '3'.
+  for (char *pp = p + 2*PGSIZE; pp < p + 3*PGSIZE; pp++)
+  {
+    *pp = '3';
+  }
+
+  //Write the 4th mpage with '4'.
+  for (char *pp = p + 3*PGSIZE; pp < p + 4*PGSIZE; pp++)
+  {
+    *pp = '4';
+  }
+
+  //Write back last mpage to file. Note we cannot split to multiple mmap regions.
+  if (munmap(p + 3*PGSIZE, PGSIZE) == -1)
+    err("munmap (1)");
+
+  //Write back first mpage to file. Again we do not break the consistency of the mmap region.
+  //Note we can still munmap from p because the "head" of the mmap region was not moved.
+  if (munmap(p, PGSIZE) == -1)
+    err("munmap (2)");
+
+  //Write back the 2 rest mpages, 2nd page and 3rd page.
+  //Note that the "head" of the mmap region was incremented by 1 page by the previous munmap().
+  if (munmap(p + PGSIZE, PGSIZE * 2) == -1)
+    err("munmap (3)");
+
+  close(fd);
+
+  //Reopen to check
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (2)");
+
+  //Create mmap for the fpage 1-4.
+  //The first page should still be 'A'. The second page should still be 'B'.
+  //The third page should be '1'. The fourth page should be '2'.
+  p = mmap(0, 4*PGSIZE, PROT_READ, MAP_PRIVATE, fd, 0);
+
+  //Should not impact the rest of the operations.
+  close(fd);
+
+  //Check the 1st mpage. It should only contain 'A'.
+  for (char *pp = p; pp < p + PGSIZE; pp++)
+  {
+    if (*pp != 'A')
+      err("mpage 1 not 'A'!");
+  }
+
+  //Check the 2nd mpage. It should only contain 'B'.
+  for (char *pp = p + PGSIZE; pp < p + 2*PGSIZE; pp++)
+  {
+    if (*pp != 'B')
+      err("mpage 2 not 'B'!");
+  }
+
+  //Check the 3rd mpage. It should only contain '1'.
+  for (char *pp = p + 2*PGSIZE; pp < p + 3*PGSIZE; pp++)
+  {
+    if (*pp != '1')
+      err("mpage 3 not '1'!");
+  }
+
+  //Check the 4th mpage. It should only contain '2'.
+  for (char *pp = p + 3*PGSIZE; pp < p + 4*PGSIZE; pp++)
+  {
+    if (*pp != '2')
+      err("mpage 4 not '2'!");
+  }
+
+  if (munmap(p, 4*PGSIZE) == -1)
+    err("munmap (4)");
+
+  p = 0;
+  printf("Test 1: OK\n");
+  printf("***********************************************************************\n");
+
+
+  //Test 2: Create 2 mmap regions with overlapped pages, write back both and see if the changes retain.
+  printf("Write back test 2: 2 mmap regions with overlapped fpages, write back both and check.\n");
+  //Create mmap region p1 for fpage 3-6. Create mmap region p2 for fpage 1-4.
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open (3)");
+
+  char *p1 = mmap(0, 4*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 2*PGSIZE);
+  char *p2 = mmap(0, 4*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+  close(fd);
+
+  //Parent proc takes p1 and child proc takes p2.
+  //Check the 1st mpage. It should only contain 'A'.
+  for (char *pp = p1; pp < p1 + 4*PGSIZE; pp++)
+  {
+    *pp = '!';
+  }
+
+  int pid;
+
+  if((pid = fork()) < 0)
+    err("fork");
+  if(pid == 0) 
+  {
+    for (char *pp = p2; pp < p2 + 4*PGSIZE; pp++)
+    {
+      *pp = '%';
+    }
+    
+    if (munmap(p2, 4*PGSIZE) == -1)
+      err("munmap (p2 child)");
+    
+    exit(0);
+  }
+
+  int status = -1;
+  wait(&status);
+
+  if(status != 0){
+    printf("fork_test failed\n");
+    exit(1);
+  }
+
+  if (munmap(p1, 4*PGSIZE) == -1)
+    err("munmap (p1 parent)");
+
+  //Re-open file and check the 6 pages we just touched.
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (3)");
+
+  //First 6 pages should be %%!!!! as the parent proc writes back AFTER the child proc.
+  p = mmap(0, 6*PGSIZE, PROT_READ, MAP_PRIVATE, fd, 0);
+
+  //Check first 2 mpages. It should only contain '%'.
+  for (char *pp = p; pp < p + 2*PGSIZE; pp++)
+  {
+    if (*pp != '%')
+      err("mpage 1-2 not '%'");
+  }
+
+  //Check the next 4 mpage. It should only contain '!'.
+  for (char *pp = p + 2*PGSIZE; pp < p + 6*PGSIZE; pp++)
+  {
+    if (*pp != '!')
+      err("mpage 3-6 not '!'");
+  }
+
+  printf("Test 2: OK\n");
+  printf("***********************************************************************\n");
+  
 }
 
 //Check 2nd page first

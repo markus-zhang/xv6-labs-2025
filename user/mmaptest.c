@@ -451,7 +451,6 @@ multi_wb_test(void)
   printf("Test 1: OK\n");
   printf("***********************************************************************\n");
 
-
   //Test 2: Create 2 mmap regions with overlapped pages, write back both and see if the changes retain.
   printf("Write back test 2: 2 mmap regions with overlapped fpages, write back both and check.\n");
   //Create mmap region p1 for fpage 3-6. Create mmap region p2 for fpage 1-4.
@@ -521,7 +520,88 @@ multi_wb_test(void)
 
   printf("Test 2: OK\n");
   printf("***********************************************************************\n");
-  
+
+  //Test 3: Small file, create 2 mmap regions with overlapped half-page, write back and see if the changes retain.
+  printf("Write back test 3: 2 mmap regions with overlapped 0.5 fpage, write back both and check.\n");
+  //Create small file.
+  const char * const fsmall = "mmap_small.dur";
+
+  //Create a small file with 1.5 pages of 'A'.
+  makefile(fsmall);
+
+  //Create mmap region p1 for fpage 3-6. Create mmap region p2 for fpage 1-4.
+  if ((fd = open(fsmall, O_RDWR)) == -1)
+    err("open (4)");
+
+  //p1 mmaps two fpages from the second fpage, while in fact it only mmaps 0.5 fpages.
+  //p2 mmaps two fpages from the beginning, while in fact it only mmaps 1.5 fpages.
+  //They overlap at the last 0.5 pages.
+  p1 = mmap(0, 2*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, PGSIZE);
+  p2 = mmap(0, 2*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+  close(fd);
+
+  //Parent proc takes p1 and child proc takes p2.
+  for (char *pp = p1; pp < p1 + 2*PGSIZE; pp++)
+  {
+    *pp = '!';
+  }
+
+  if((pid = fork()) < 0)
+    err("fork");
+  if(pid == 0) 
+  {
+    for (char *pp = p2; pp < p2 + 2*PGSIZE; pp++)
+    {
+      *pp = '%';
+    }
+    
+    if (munmap(p2, 2*PGSIZE) == -1)
+      err("munmap (p2 child)");
+    
+    exit(0);
+  }
+
+  status = -1;
+  wait(&status);
+
+  if(status != 0){
+    printf("fork_test failed\n");
+    exit(1);
+  }
+
+  if (munmap(p1, 2*PGSIZE) == -1)
+    err("munmap (p1 parent)");
+
+  //Re-open file and check the 6 pages we just touched.
+  if ((fd = open(fsmall, O_RDONLY)) == -1)
+    err("open (5)");
+
+  //First mpage should be % and the next half page should be !, then all zero.
+  p = mmap(0, 2*PGSIZE, PROT_READ, MAP_PRIVATE, fd, 0);
+
+  //Check first mpage. It should only contain '%'.
+  for (char *pp = p; pp < p + PGSIZE; pp++)
+  {
+    if (*pp != '%')
+      err("mpage 1 not '%'");
+  }
+
+  //Check the next 0.5 mpage. It should only contain '!'.
+  for (char *pp = p + PGSIZE; pp < p + 3 * PGSIZE / 2; pp++)
+  {
+    if (*pp != '!')
+      err("mpage 1-1.5 not '!'");
+  }
+
+  //Check the last 0.5 mpage. It should only contain 0.
+  for (char *pp = p + 3 * PGSIZE / 2; pp < p + 2*PGSIZE; pp++)
+  {
+    if (*pp != 0)
+      err("mpage 1.5-2 not 0");
+  }
+
+  printf("Test 3: OK\n");
 }
 
 //Check 2nd page first

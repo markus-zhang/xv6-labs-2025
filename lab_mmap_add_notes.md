@@ -6,9 +6,9 @@
 
 [X] Convert writeback to a loop per page, without using the dirty bit. The current implementation "seeks" to `BOF + offset`, then copy `nbytes` from user VA `addr` into the file. Basically, break down `nbytes` into chunks of 1 page or less. Note that one of the chunks could be a small chunk, which is under 1 page, if `nbytes` cannot be divided by `PGSIZE`. It needs to pass all previous tests. Write more tests to check whether writing a small chunk spills over to the rest of the page.
 
-[ ] Ask ChatGPT to recommend more tests. The more tests we write, the more familiar we are with the code, and we will have fewer bugs.
+[X] Ask ChatGPT to recommend more tests. The more tests we write, the more familiar we are with the code, and we will have fewer bugs.
 
-[ ] Modify the code to use dirty bits. Don't forget to write a few syscalls (check the branch `mmap_dirty`) to prove that the dirty bit saves a lot of writebacks. Write more tests...more tests...
+[X] Modify the code to use dirty bits. Don't forget to write a few syscalls (check the branch `mmap_dirty`) to prove that the dirty bit saves a lot of writebacks. Write more tests...more tests...
 
 ## Additional Notes
 
@@ -21,7 +21,7 @@ Ultimately, I want to create a function `mmapwriteback()` that does the followin
 - `addr`  : the user land address, e.g. `char *p = mmap(...)`, then `p` is the `addr` passed into this function;
 - `offset`: the absolute offset of writeback, i.e. the number of bytes between the start of the file, and the initial address to write back. More details in the examples. Here is an example: Say the mmap maps the 2nd page, the 3rd page and the 4th page against the file `f`. Then we want to write back the last page, then `offset` is 3, not 2, because the start address of the 4th page is 3 pages away from the start of the file.
 
-This implementation supports the following usages. See List 1.1, 1.2 and 1.3.
+This implementation supports the following usages. See List 1.1, 1.2, 1.3 and 1.4.
 
 **List 1.1 - mmap and munmap the nth page of a RDONLY file:**
 
@@ -97,6 +97,36 @@ This implementation supports the following usages. See List 1.1, 1.2 and 1.3.
   close(fd);
 ```
 
+**List 1.4: Over-mmap, and write back changes:**
+
+```C
+//List 1.4
+  //Create mmap region for 20 fpages -- overmmap 10 pages
+  p = mmap(0, 30*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  close(fd);
+
+  //Write the 4th mpage with '4'.
+  for (char *pp = p + 3*PGSIZE; pp < p + 4*PGSIZE; pp++)
+  {
+    *pp = '4';
+  }
+
+  //Write the 10th mpage with '0'.
+  for (char *pp = p + 9*PGSIZE; pp < p + 10*PGSIZE; pp++)
+  {
+    *pp = '0';
+  }
+
+  //Write back 5 mpages to file. Should see a bunch of skipped messages.
+  if (munmap(p, 5*PGSIZE) == -1)
+    err("munmap (5)");
+
+  //Write back 25 mpages to file. Should see a bunch of skipped messages.
+  //Also should never spill over to other places.
+  if (munmap(p + 5*PGSIZE, 25*PGSIZE) == -1)
+    err("munmap (6)");
+```
+
 This implementation does NOT support:
 
 User programs **CANNOT** mmap multiple **NON-consecutive** pages in one `mmap()` call. The region has to be consecutive.
@@ -105,27 +135,214 @@ User programs need to update the mmap address (in the above case, that is `p`) a
 
 User programs **CANNOT** unmap a middle page, to split the mmap region into multiple regions. To achieve this, we would have to use a different type of data structure (e.g. anything that supports splitting nodes), which I do not plan to implement for the near future. Right now, there is no check against this behavior, so the error could be very implicit. I might as well add one soon.
 
-### Write Back reading
+### Write Back
 
 The algorithm of mmap write back can be summarized as simple as List 2.1:
 
 ```C
 //List 2.1
 int
-mmapwriteback(struct file *f, vaddr_r addr, uint64 offset, int nbytes)
+sys_munmap(/* arguments */)
 {
-  //Step 1: Check whether we spill over the file limit as mmap is not supposed to extend the file, for now.
+  //Step 1: Check whether we need to writeback, and update the variable writeback
 
-  //Step 2: In a loop, write a chunk of n1 bytes (see filewriteback()) into the inode, from an incremental offset.
+  //Step 2: Writeback if writeback is 1.
+  if (writeback)
+  {
+    //Do writeback.
+  }
 }
 ```
 
-Step 1 should be pretty straightforward. Assuming file size is `sz`, then check `offset + nbytes <= sz`.
-
-Step 2 is more complicated. Judging from the code, it breaks down into smaller writes. Each write is capped to `n1` because we don't want to exceed the maximum log transaction size. For each `n1`, which is usually of the size of a few `BSIZE`, it is further broken down into buf blocks, either one full block, or partial block if `offset%BSIZE` is not 0. Each "micro" write is handled by `copyin()` which simply copies the data from source, in our case is the mmap region, to the buf block. The process is shown in List 2.2.
+Step 1 is pretty straightforward. We ONLY write back if `PROT_WRITE`, `MAP_SHARED`, file is opened as `writable`, and the offset from `originalstartua` to `addr` is smaller than the file size. Please read the comments in List 2.2 for more details.
 
 ```C
 //List 2.2
+  //Pre-requisite: prot = PROT_WRITE, flags = MAP_SHARED, and file is writable.
+  //Other condition: Do NOTE write back unmapped part (p->fmap[index].startua + p->fmap[index].f->ip->size > addr)
+  //For example, the file is of 10.5 pages long. Do we writeback, and how much do we writeback if the 10th page is mmapped?
+  if ((
+    p->fmap[index].prot & PROT_WRITE) && 
+    (p->fmap[index].flags & MAP_SHARED) &&
+    p->fmap[index].f->writable &&
+    p->fmap[index].originalstartua + p->fmap[index].f->ip->size > addr
+  )
+    writeback = 1;
+```
+
+Step 2 is a bit complicated. We need to calculate the number of bytes to be written back, and then only write back the dirty pages. The whole structure can be summarized as in List 2.3.
+
+```C
+//List 2.3
+  if(writeback)
+  {
+    //Step 2.1: Calculate the foffset
+    vaddr_t offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
+    
+    
+    //Step 2.2: Calculate total number of bytes to write back (nbytes).
+
+    if (nbytes > 0)
+    {
+      //Step 2.3: Break down nbytes to multiple PGSIZE nbyteschunk. Loop through every one of them, and only write back the dirty pages.
+      for ( ; nbytes > 0; )
+      {
+        //Step 2.3.1: Write back dirty page. Reset the dirty bit. 
+
+        //Step 2.3.2: Update offset, addr, nbytes and nbyteschunk for the next loop
+      }
+    }
+  }
+```
+
+Step 2.1 is not as trivial as it looks like. Assuming there is a 20-page file, and we mmapge 4 fpages: fpage 3 to fpage 6 (we count from fpage 1, not fpage 0). List 2.4 shows the setup.
+
+```C
+//List 2.4
+                  ___ End of mmap region
+                  |
+                  x
+|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|
+0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
+      x
+      |
+      |
+    Start of mmap region
+```
+
+We have mpage 1, 2, 3 and 4 -- again we count from 1, not 0. Let's say we want to write back mpage 2. What is the foffset from the beginning of the file? It is not 2, because the mmap region itself has an offset of 2. So we need to add 2 on top of 2, to get 4. We need to write back mpage 2 into fpage 4. The scheme is to be found in List 2.5. The mmap region offset is saved in `p->fmap[index].offset`, and the mpage offset (regarding the beginning of the mmap region) is to be calculated as (mpage address - the beginning address of the mmap region), which is `(addr - p->fmap[index].startua)`.
+
+```C
+//List 2.5
+    //Ex. munmap(p+PGSIZE, PGSIZE), and the whole mmap region has an offset,
+    //which is saved in p->fmap[index].offset.
+    //A second offset, which is the offset of the addr to the start of mmap region,
+    //is calculated as offset = p+PGSIZE - p = PGSIZE.
+    //Both offsets are then added to be applied to the file position.
+
+    //After the previous munmap, both startua and offset in the fmap entry are updated.
+    vaddr_t offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
+```
+
+There are other complications that are taken care of, too. Note that the last comment says that both `startua` and `offset` are updated. Why? Because the mmap region may change by one or more incomplete `munmap()` syscall. Let's go back to List 2.4. I'll paste it here for convenience.
+
+```C
+//List 2.4
+                  ___ End of mmap region
+                  |
+                  x
+|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|
+0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
+      x
+      |
+      |
+    Start of mmap region
+```
+
+We now call `munmap()` to unmap the first 2 pages. We arrive at List 2.5.
+
+```C
+//List 2.5
+                  ___ End of mmap region
+                  |
+                  x
+|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|
+0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
+            x
+            |
+            |
+          Start of mmap region
+```
+
+We immediately notice that the mmap region offset (to the beginning of the file) is changed. Not only that, any mpage left is now 2 pages closer to the beginning address of the mmap region. That's what meant by saying "both startua and offset in the fmap entry are updated".
+
+An additional test of the update of the two offsets is to deliberately over-mmap, and try to write pass the end of the file. List 2.6 demonstrates an example:
+
+```C
+//List 2.6
+                                                                  ___ End of mmap region
+                                                                  |
+                                                                  x
+|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|..|..|
+0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
+                                                   x
+                                                   |
+                                                   |
+                                                 Start of mmap region
+```
+
+In List 2.6, we create a mmap region of 5 mpages. But only 3 of them are within the file boundary. If we miscalculate the offsets, `munmap()` won't be able to catch a write into the last 2 mpages, which are NOT backed by the file.
+
+Step 2.2 is less tricky, but we still need to make sure that we don't overwrite, shown in List 2.7. A deliberate overwrite PASS the EOF causes `offset` (which is the number of bytes from the beginning address of the file) to be greater than the size of the file. For example, in List 2.6, if we write into mpage 5, the last mpage, `offset` is `22*PGSIZE` bytes. The gotcha part is that `f->ip->size` is a `uint64`, and `offset` is an `int`, so make sure that you don't use subtration which may overflow the result if it is negative. We only need to write back when `offset` is smaller than the size of the file, and we are going to take the minimum of `len` and `f->ip->size - offset`. `len` is one of the arguments, which says the caller wants to unmap `len` bytes. 
+
+Now what does this `min()` do? If `len` is too large, i.e. it causes overwrite, the `min()` truncates it down. Otherwise we just take `len`.
+
+```C
+//List 2.7
+    //Step 2.2: Calculate total number of bytes to write back (nbytes).
+    int nbytes = 0;
+    if (offset < f->ip->size)
+      nbytes = min(len, f->ip->size - offset);
+```
+
+Step 2.3 is shown in full in List 2.8. I have removed some debugging prints to make it a bit more readable. But I keep the commens as they are. We first break down `nbytes` to `nbyteschunk`. Since `nbytes` could be less than `PGSIZE`, we use a second `min()` to make sure the `nbyteschunk` for the first loop is correct. We then go into the loop to check whether the page is dirty. Please note that `addr` is always `PGSIZE` aligned (even after each update, which we will talk about in a minute), so we simply call `walk()` to get the PTE of `addr` and check its `PTE_D` bit. `PTE_D` is the 7th bit and is controlled by the hardware. Once we confirm that the page is dirty, we call `mmapwrite()` to actually write back. We will go into `mmapwrite()` in the next section. Once `mmapwrite()` completes, we need to reset `PTE_D` because I don't think the CPU is smart enough to do that. At the end of the loop we update all variables for the next loop. Note that `addr += nbyteschunk;` is not ALWAYS aligned to `PGSIZE`, but this is fine. Why? Because only the last chunk could be smaller than a page. We simply don't need to use `addr` anymore.
+
+```C
+//List 2.8
+  //Do not write back if it is in an overmmapped region (> EOF so nbytes keeps 0)
+    if (nbytes > 0)
+    {
+      //Break down nbytes to PGSIZE, so that each mmapwrite() writes a full page if possible.
+      //Since addr is already aligned to page, we only need to worry about offset and nbytes.
+      //1) vaddr_t offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
+      //p->fmap[index].offset is aligned to page as confirmed in sys_mmap().
+      //startua is also defined as GiB aligned so definitely page aligned.
+      //So we can conclude that offset is aligned to page as well.
+      //2) We need to break down nbytes so that each write writes a maximum of PGSIZE bytes.
+      //We also use the dirty bit - bit 7 to make sure we can skip the clean ones.
+      
+      int nbytesbackup = nbytes;
+      int nbyteschunk = min(PGSIZE, nbytes);
+
+      for ( ; nbytes > 0; )
+      {
+        // int nbyteschunk = min(PGSIZE, nbytes);
+        //If addr has dirty bit set, then write back, otherwise skipped.
+        //addr may not be mapped - if we map 20 pages but only write the first page, 19 pages are not mmaped.
+        //Thus we should not panic here, and neither should we allocate the page in walk().
+
+        pte_t *pte = walk(p->pagetable, addr, 0);
+        if((pte) && (((*pte) & PTE_D) > 0))
+        {
+          printf("writeback: writing back 0x%x bytes at 0x%lx offset by 0x%lx.\n", nbyteschunk, addr, offset);
+          int ret = mmapwrite(f, addr, offset, nbyteschunk);
+
+          if (ret < 0)
+          {
+            panic("sys_munmap: file writeback failed");
+          }
+          
+          //Already written the dirty page, so we remove the dirty bit. 
+          *pte &= (~PTE_D);
+        }
+
+        //We also need to update offset and addr, so that we don't write into/from the same place again and again.
+        //So make sure that we don't use offset/addr after this look. That DPRINT() is fine.
+        //Still, better to preserve offset/addr and use a copy instead.
+        offset += nbyteschunk;
+        addr += nbyteschunk;
+
+        //Since we modify nbytes in place, make sure it is not used in the code after this loop.
+        nbytes -= nbyteschunk;
+        nbyteschunk = min(PGSIZE, nbytes);
+      }
+    }
+```
+
+I want to talk a bit about `mmapwrite()`. It is essemtially a weaker version of `filewrite()` because we only care about `FD_INODE`. Judging from the code, it breaks down into smaller writes. Each write is capped to `n1` because we don't want to exceed the maximum log transaction size. For each `n1`, which is usually of the size of a few `BSIZE`, it is further broken down into buf blocks, either one full block, or partial block if `offset%BSIZE` is not 0. Each "micro" write is handled by `copyin()` which simply copies the data from source, in our case is the mmap region, to the buf block. The process is shown in List 2.9.
+
+```C
+//List 2.9
 int i = 0;
 while(i < nbyte)
 {
@@ -153,73 +370,17 @@ while(i < nbyte)
 }
 ```
 
-I have made a small modification to the code for the situation where `mmap()` is called to map a part of the file with a non-zero offset.
+I have made a small modification to the code for the situation where `mmap()` is called to map a part of the file with a non-zero offset (mmap from somewhere in the middle of the file, not the beginning of the file). That is, in the lower level `writebacki()` function, I use `offset` instead of `f->off`, because MMAP doesn't really change or use `f->off`.
 
-For example, in `largefile_test()`, a file of 20 pages is created, with each page filled by a letter, starting from 'A' and ending with 'T'. Now a user program calls `mmap()` to mmap s pages starting from page 2. List 2.3 shows an example of the function call. List 2.4 shows the graphic representation of the file, as well as the mmap region.
+In List 2.10 I show the lowest level `copyinback()` function. The upper level function call is shown in List 2.10, where `off` is the `offset` argument of `mmapwrite()`. This `offset`, let me remind you, is the total offset of the VA from the beginning address of the file. 
 
 ```C
-//List 2.3
-//mmap 2 pages with offset = 2 pages
-p = mmap(0, 2*PGSIZE, PROT_READ, MAP_PRIVATE, fd, 2*PGSIZE);
+//List 2.10, in writebacki()
+if(copyinback(p->pagetable, (void *)(bp->data + (off % BSIZE)), src, m) == -1)
 ```
 
 ```C
-//List 2.4
-            ___ End of mmap region
-            |
-            x
-|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|__|
-0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
-      x
-      |
-      |
-    Start of mmap region
-```
-
-`mmap()` saves the mmap region offset (2 pages in this case) into the `fmap` entry.
-
-When `munmap()` writes back, (if there is a write back and the right permission) it writes back from the start of mmap region towards the EOF -- this is what I called a "full file writeback", although actually it only touches the 3rd page.
-
-The so called full file writeback writes back every page starting from page 2. Technically, it never writes back unmapped pages, but that is implemented in a lower level routine, not in `sys_munmap()`, so let's pretend it writes back every page starting from page 2.
-
-### Calculation of offset and nbytes
-
-```C
-//List 3.1
-//sysfile.c, in sys_munmap(), within the scope of if(writeback).
-
-  //Step 3: Write back in demand.
-  if(writeback)
-  {
-    //...code skipped
-
-    //After the previous munmap, both startua and offset in the fmap entry are updated.
-    int offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
-
-    //...code skipped
-  }
-
-//sysfile.c, in sys_munmap(), in the else branch of the last if-else.
-  else
-  {
-    //This implementation only supports head/tail unmap.
-    //It does not support splitting the mmap region into 2 or more subregions.
-    //If the tail is unmmapped, no need to update offset.
-    //If the head is unmmapped, move offset to original offset + len
-    if (baseaddr == p->fmap[index].startua)
-      p->fmap[index].offset += len;
-
-    p->fmap[index].startua = newstartua;
-    p->fmap[index].len -= len;
-  }
-```
-
-The `offset` consists of two parts: Part 1 is what I called the "absolute offset", which is the offset of the whole mmap region to the start of the file. This is represented as `p->fmap[index].offset`. Part 2 is the offset of `addr` to the `startua`. Combine both offsets, we get the real offset that we need to write back into the file. The absolute offset is also updated by each `munmap()`, given that the function call does NOT remove the mmap region entirely -- e.g. removing only 1 page out of a 2-page region. List 3.1 shows the calculation of `offset` and update of `p->fmap[index].offset`.
-
-`nbytes` is calculated as `min(len, f->ip->size - offset)`. Note that there is no dirty bit involved. If the unmapped region (# of bytes given as `len`) is within the file, we simply write back `len` bytes. Now imagine that we deliberately OVER-map, e.g. the file is 20 pages, we map from the 5th page with a length of 30 pages, then when we write back, len = 30 pages, but f->ip->size - offset = 16 pages, so we write back 16 pages eventually. Of course writing back 30 pages won't fail anything because any unmapped region is ignored, but just to be on the safe side.
-
-```C
-//List 3.2
+//List 2.11
 //mmap version copyin()
 int
 copyinback(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
@@ -243,25 +404,3 @@ copyinback(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   return 0;
 }
 ```
-
-### Example of munmap() with demonstration of writing back
-
-```C
-//First munmap() call, to unmap the first page.
-if (munmap(p, PGSIZE) == -1)
-  err("munmap");
-```
-
-In this call, `addr` is equal to `originalstartua`, so `offset` is simply the mmap region offset. And `nbytes` is file size (20 pages) - mmap region offset (2 pages) = 18 pages. So the routine writes back 18 pages starting from page 2, which is correct, although inefficient as only 1 page is needed.
-
-After this call, `p->fmap[index].startua` is moved to `p+PGSIZE`, and `p->fmap[index].len` is reduced to 1. Note that `p->fmap[index].len` is the length of the mmap region, which is different from the routine argument `len`. Whenever I talked about `len`, I meant the routine argument. Damn I really need to find better variable names...
-
-```C
-//Second munmap() call, to unmap the first page.
-if (munmap(p, PGSIZE) == -1)
-  err("munmap");
-```
-
-In this functio call, `offset` is calculated as 2 + 1 = 3. We didn't update `p->fmap[index].offset` so it is still 2, but `addr` is one page away from `p->fmap[index].originalstartua`, so the total is 3. I'm thinking, is it better simply to update `p->fmap[index].offset`? So we don't need to add the weird `(addr - p->fmap[index].originalstartua)`.
-
-`nbytes` is calculated as 20 pages - offset (3 pages) = 17 pages.

@@ -630,120 +630,6 @@ ffmmap(struct proc * p)
 }
 
 uint64
-sys_munmap2(void)
-{
-  vaddr_t addr = 0;
-  int len = 0;
-  int writeback = 0;
-
-  //Step 1: Read cli arguments and ASSERT().
-  argaddr(0, &addr);
-  argint(1, &len);
-
-  if (len == 0)
-    return 0;
-
-  //We use findmmapwithin() so addr is not required to be aligned to PGSIZE.
-  //TODO: However munmap() in Linux requires this.
-  ASSERT(addr % PGSIZE == 0);
-  vaddr_t baseaddr = PGROUNDDOWN(addr);
-
-  //According to the test program, len should be aligned to PGSIZE, 
-  //TODO: However munmap() in Linux does not require this.
-  ASSERT(len % PGSIZE == 0);
-
-  //Step 2: Check which mmap region addr belongs to.
-  struct proc *p = myproc();
-
-  int index = findmmapwithin(p, baseaddr);
-  if (index == -1)
-  {
-    printf("Out of range 0x%lx\n", baseaddr);
-    return -1;
-  }
-
-  //Step 2: Do we need to writeback?
-  //Pre-requisite: prot = PROT_WRITE, flags = MAP_SHARED, and file is writable.
-  //Other condition: Do NOTE write back unmapped part (p->fmap[index].startua + p->fmap[index].f->ip->size > addr)
-  //For example, the file is of 10.5 pages long. Do we writeback, and how much do we writeback if the 10th page is mmapped?
-  if ((
-    p->fmap[index].prot & PROT_WRITE) && 
-    (p->fmap[index].flags & MAP_SHARED) &&
-    p->fmap[index].f->writable &&
-    p->fmap[index].originalstartua + p->fmap[index].f->ip->size > addr
-  )
-    writeback = 1;
-
-  //Step 3: Calculate newstartua and endua based on which region the user wants to munmap.
-  //1) len, the second argument of munmap(), is always PGSIZE aligned.
-  //2) tests never munmap() a middle page, to break the mmap region into 2.
-  //Point 2) is especially important as it impacts the vma data structure.
-  vaddr_t newstartua, endua = 0;
-  if (baseaddr <= p->fmap[index].startua)
-  {
-    //e.g. munmap(p, PGSIZE * 2);
-    //baseaddr should never < startua, but just in case.
-    newstartua = p->fmap[index].startua + len;
-    endua = p->fmap[index].startua + p->fmap[index].len;
-  }
-  else
-  {
-    //e.g. munmap(p+PGSIZE, PGSIZE);
-    //assuming munmap() never breaks the region into multiple parts.
-    //i.e. it either unmaps some mem in the front, or in the back.
-    newstartua = p->fmap[index].startua;
-    endua = baseaddr;
-  }
-
-  //Step 3: Write back in demand.
-  if (writeback)
-  {
-    struct file *f = p->fmap[index].f;
-    //printf("sys_munmap: writing back 0x%x bytes for addr %p\n", f->ip->size, (void *)baseaddr);
-    if (!(f->writable))
-      panic("sys_munmap: Supposed to writeback but f is not writable");
-
-    //_v1(p) calls `fileread()` which modifies f->off.
-    //So we need to reset it to 0 once we decide to write back.
-    f->off = 0;
-    //NOTE: `filewrite()` is not supposed to increment file size.
-    //So we need to fetch the size and write back the whole file.
-    int ret = filewriteback(f, p->fmap[index].originalstartua, f->ip->size);
-    if (ret < 0)
-      panic("sys_munmap: file writeback failed");
-  }
-
-  //Step 3: Unmap the region
-  uint64 npages = len / PGSIZE;
-  uvmunmap(p->pagetable, baseaddr, npages, 1);
-
-  //If we already unmapped the whole mmap region, remove the entry.
-  if (newstartua >= endua)
-  {
-    DPRINTF("sys_munmap: removed fmap entry %d\n", index);
-    p->fmap[index].f->ref -= 1;
-    p->fmap[index].f = 0;
-    p->fmap[index].flags = 0;
-    p->fmap[index].len = 0;
-    p->fmap[index].prot = 0;
-    p->fmap[index].startua = 0;
-    p->fmap[index].originalstartua = 0;
-    p->totalvma -= 1;
-  }
-  //Otherwise, simply increment startua
-  else
-  {
-    p->fmap[index].startua = newstartua;
-    p->fmap[index].len -= len;
-  }
-
-  DPRINTF("sys_munmap: release 0x%x bytes at addr %p\n", len, (void *)baseaddr);
-  DPRINTF("fmap[%d]: startua 0x%lx with len 0x%x\n", index, newstartua, p->fmap[index].len);
-
-  return 0;
-}
-
-uint64
 sys_munmap(void)
 {
   vaddr_t addr = 0;
@@ -827,7 +713,6 @@ sys_munmap(void)
     DPRINTF("fmap offset 0x%x, addr 0x%lx, startua 0x%lx\n", p->fmap[index].offset, addr, p->fmap[index].startua);
     //After the previous munmap, both startua and offset in the fmap entry are updated.
     vaddr_t offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
-    // int offset = p->fmap[index].offset + (addr - p->fmap[index].originalstartua);
 
     //Writing back nbytes. Read lab_mmap_add_notes.md for the reason of this min().
 
@@ -836,7 +721,8 @@ sys_munmap(void)
     int nbytes = 0;
     if (offset < f->ip->size)
       nbytes = min(len, f->ip->size - offset);
-    DPRINTF("munmap: Saved %d bytes of writing back.\n", absdiff(len, f->ip->size - offset));
+    printf("filesize 0x%x - offset 0x%lx is nbytes 0x%x\n", f->ip->size, offset, nbytes);
+    DPRINTF("sys_munmap: Saved %d bytes of writing back.\n", absdiff(len, f->ip->size - offset));
 
     //Given a `struct file *f`, `vaddr_t addr`, `uint64 offset` and `int n`, 
     //the function writes `nbytes` bytes from `addr` into the file `f`, 
@@ -847,43 +733,54 @@ sys_munmap(void)
     //Do not write back if it is in an overmmapped region (> EOF so nbytes keeps 0)
     if (nbytes > 0)
     {
-      //TODO: Break down nbytes to PGSIZE, so that each mmapwrite() writes a full page if possible.
+      //Break down nbytes to PGSIZE, so that each mmapwrite() writes a full page if possible.
       //Since addr is already aligned to page, we only need to worry about offset and nbytes.
       //1) vaddr_t offset = p->fmap[index].offset + (addr - p->fmap[index].startua);
       //p->fmap[index].offset is aligned to page as confirmed in sys_mmap().
       //startua is also defined as GiB aligned so definitely page aligned.
       //So we can conclude that offset is aligned to page as well.
       //2) We need to break down nbytes so that each write writes a maximum of PGSIZE bytes.
-
-      // int ret = mmapwrite(f, addr, offset, nbytes);
-      // if (ret < 0)
-      // {
-      //   DPRINTF("offset: 0x%lx, nbytes: 0x%x\n", offset, nbytes);
-      //   panic("sys_munmap: file writeback failed");
-      // }
+      //We also use the dirty bit - bit 7 to make sure we can skip the clean ones.
       
       int nbytesbackup = nbytes;
-      while (1)
-      {
-        int nbyteschunk = min(PGSIZE, nbytes);
-        printf("writeback: writing back 0x%x bytes at 0x%lx offset by 0x%lx.\n", nbyteschunk, addr, offset);
-        int ret = mmapwrite(f, addr, offset, nbyteschunk);
+      int nbyteschunk = min(PGSIZE, nbytes);
 
-        if (ret < 0)
+      for ( ; nbytes > 0; )
+      {
+        // int nbyteschunk = min(PGSIZE, nbytes);
+        //If addr has dirty bit set, then write back, otherwise skipped.
+        //addr may not be mapped - if we map 20 pages but only write the first page, 19 pages are not mmaped.
+        //Thus we should not panic here, and neither should we allocate the page in walk().
+
+        pte_t *pte = walk(p->pagetable, addr, 0);
+        if((pte) && (((*pte) & PTE_D) > 0))
         {
-          DPRINTF("offset: 0x%lx, nbytes: 0x%x\n", offset, nbytes);
-          panic("sys_munmap: file writeback failed");
+          printf("writeback: writing back 0x%x bytes at 0x%lx offset by 0x%lx.\n", nbyteschunk, addr, offset);
+          int ret = mmapwrite(f, addr, offset, nbyteschunk);
+
+          if (ret < 0)
+          {
+            DPRINTF("offset: 0x%lx, nbytes: 0x%x\n", offset, nbytes);
+            panic("sys_munmap: file writeback failed");
+          }
+          
+          //Already written the dirty page, so we remove the dirty bit. 
+          *pte &= (~PTE_D);
         }
-        //Since we modify nbytes in place, make sure it is not used in the code after this loop.
-        nbytes -= nbyteschunk;
-        if (nbytes == 0)
-          break;
+        else
+        {
+          printf("writeback: addr 0x%lx clean, skipped\n", addr);
+        }
 
         //We also need to update offset and addr, so that we don't write into/from the same place again and again.
         //So make sure that we don't use offset/addr after this look. That DPRINT() is fine.
         //Still, better to preserve offset/addr and use a copy instead.
         offset += nbyteschunk;
         addr += nbyteschunk;
+
+        //Since we modify nbytes in place, make sure it is not used in the code after this loop.
+        nbytes -= nbyteschunk;
+        nbyteschunk = min(PGSIZE, nbytes);
       }
       printf("writeback: in total wrote back 0x%x bytes.\n", nbytesbackup);
     }
@@ -891,7 +788,7 @@ sys_munmap(void)
       DPRINTF("Overmapped region reached! No writeback offset @ 0x%lx\n", offset);
   }
 
-  //Step 3: Unmap the region
+  //Step 4: Unmap the region
   uint64 npages = len / PGSIZE;
   uvmunmap(p->pagetable, baseaddr, npages, 1);
 

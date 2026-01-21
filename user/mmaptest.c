@@ -14,6 +14,7 @@ void reverse_test();
 void write_test();
 void largefile_test();
 void multi_wb_test();
+void dirty_test();
 char buf[PGSIZE];
 
 #define MAP_FAILED ((char *) -1)
@@ -25,11 +26,12 @@ main(int argc, char *argv[])
   // write_test();
   // exit(0);
 
-  // mmap_test();
-  // fork_test();
-  // more_test();
-  // largefile_test();
+  mmap_test();
+  fork_test();
+  more_test();
+  largefile_test();
   multi_wb_test();
+  dirty_test();
   printf("mmaptest: all tests succeeded\n");
   exit(0);
 }
@@ -602,6 +604,138 @@ multi_wb_test(void)
   }
 
   printf("Test 3: OK\n");
+}
+
+
+//Dirty-bit writeback tests.
+//Technically we don't need extra tests for multiple write backs, but the more tests the more fun.
+void
+dirty_test(void)
+{
+  int fd;
+  const char * const f = "mmap_large.dur";
+
+  //Create large file of 20 pages.
+  makelargefile(f);
+
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open (1)");
+
+  //Test 1: mmap 20 pages starting from the 1st fpage. Write back and reopen to check.
+  printf("***********************************************************************\n");
+  printf("Dirty bit test 1: mmap 20 fpages, change one of them, write back and check # of skips.\n");
+  //Create mmap region for fpage 1-20.
+  char *p = mmap(0, 20*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  close(fd);
+
+  //Write the 1st mpage with '1'.
+  for (char *pp = p; pp < p + PGSIZE; pp++)
+  {
+    *pp = '1';
+  }
+
+
+  //Write back 20 mpages to file. Should see a bunch of skipped messages.
+  if (munmap(p, 20*PGSIZE) == -1)
+    err("munmap (1)");
+
+  //Reopen to check
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (2)");
+
+  //The first page should still be '1'. The rest should not change.
+  p = mmap(0, 4*PGSIZE, PROT_READ, MAP_PRIVATE, fd, 0);
+
+  //Should not impact the rest of the operations.
+  close(fd);
+
+  //Check the 1st mpage. It should only contain '1'.
+  for (char *pp = p; pp < p + PGSIZE; pp++)
+  {
+    if (*pp != '1')
+      err("mpage 1 not '1'!");
+  }
+
+  //Check the 2nd mpage. It should only contain 'B'.
+  for (char *pp = p + PGSIZE; pp < p + 2*PGSIZE; pp++)
+  {
+    if (*pp != 'B')
+      err("mpage 2 not 'B'!");
+  }
+
+  //Check the 3rd mpage. It should only contain 'C'.
+  for (char *pp = p + 2*PGSIZE; pp < p + 3*PGSIZE; pp++)
+  {
+    if (*pp != 'C')
+      err("mpage 3 not 'C'!");
+  }
+
+  //Check the 4th mpage. It should only contain 'D'.
+  for (char *pp = p + 3*PGSIZE; pp < p + 4*PGSIZE; pp++)
+  {
+    if (*pp != 'D')
+      err("mpage 4 not 'D'!");
+  }
+
+  if (munmap(p, 4*PGSIZE) == -1)
+    err("munmap (4)");
+
+  printf("Dirty test 1: OK\n");
+  
+  printf("***********************************************************************\n");
+
+  //Test 2: mmap 30 pages starting from the 1st fpage. Write back and reopen to check.
+  printf("Dirty bit test 2: mmap 30 fpages, change one of them, write back and check # of skips.\n");
+
+  if ((fd = open(f, O_RDWR)) == -1)
+    err("open (1)");
+  //Create mmap region for fpage 1-20.
+  p = mmap(0, 30*PGSIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  close(fd);
+
+  //Write the 4th mpage with '4'.
+  for (char *pp = p + 3*PGSIZE; pp < p + 4*PGSIZE; pp++)
+  {
+    *pp = '4';
+  }
+
+  //Write the 10th mpage with '0'.
+  for (char *pp = p + 9*PGSIZE; pp < p + 10*PGSIZE; pp++)
+  {
+    *pp = '0';
+  }
+
+  //Write back 5 mpages to file. Should see a bunch of skipped messages.
+  if (munmap(p, 5*PGSIZE) == -1)
+    err("munmap (5)");
+
+  //Write back 25 mpages to file. Should see a bunch of skipped messages.
+  if (munmap(p + 5*PGSIZE, 25*PGSIZE) == -1)
+    err("munmap (6)");
+
+  //Reopen to check
+  if ((fd = open(f, O_RDONLY)) == -1)
+    err("open (3)");
+
+  //Create 2 mmap regions to check the 4th page and the 10th page.
+  char *p1 = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd, 3*PGSIZE);
+  char *p2 = mmap(0, PGSIZE, PROT_READ, MAP_PRIVATE, fd, 9*PGSIZE);
+
+  //Check 4th mpage. It should be filled with '4'.
+  for (char *pp = p1; pp < p1 + PGSIZE; pp++)
+  {
+    if (*pp != '4')
+      err("4th mpage is not '4'");
+  }
+
+  //Check the 10th mpage. It should be filled with '0'.
+  for (char *pp = p2; pp < p2 + PGSIZE; pp++)
+  {
+    if (*pp != '0')
+      err("10th mpage is not '0'");
+  }
+
+  printf("Dirty test 2: OK\n");
 }
 
 //Check 2nd page first

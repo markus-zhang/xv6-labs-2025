@@ -81,6 +81,23 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+//mmap:
+//We probably don't need fd as it is closed after mmap
+//We need the path so that same file goes into same fdmap
+struct vma
+{
+  //File backed VMA
+  struct file *f;
+  vaddr_t startua;
+  vaddr_t originalstartua;
+  int len;
+  int offset;
+  int prot;
+  int flags;
+};
+
+#define MAXMMAP 16
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -104,4 +121,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  //16 mmap regions, each backed by a struct file *
+  struct vma fmap[MAXMMAP];
+  int totalvma;
 };

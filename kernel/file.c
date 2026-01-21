@@ -62,9 +62,14 @@ fileclose(struct file *f)
   struct file ff;
 
   acquire(&ftable.lock);
+  // printf("fileclose: ref is %d\n", f->ref);
   if(f->ref < 1)
     panic("fileclose");
   if(--f->ref > 0){
+    //printf("fileclose: file 0x%ld has ref %d\n", (uint64)f, f->ref);
+    //struct proc *p = myproc();
+    //printf("%p\n", p);
+    //printf("fileclose: ref reduced 1 to %d\n", f->ref);
     release(&ftable.lock);
     return;
   }
@@ -106,6 +111,8 @@ filestat(struct file *f, uint64 addr)
 int
 fileread(struct file *f, uint64 addr, int n)
 {
+  //  printf("fileread: f %p, addr 0x%lx, n 0x%x, size 0x%x\n", f, addr, n, f->ip->size);
+  // printf("fileread: f %p, offset 0x%x\n", f, f->off);
   int r = 0;
 
   if(f->readable == 0)
@@ -134,6 +141,7 @@ fileread(struct file *f, uint64 addr, int n)
 int
 filewrite(struct file *f, uint64 addr, int n)
 {
+  //printf("filewrite: f %p, addr 0x%lx, n 0x%x\n", f, addr, n);
   int r, ret = 0;
 
   if(f->writable == 0)
@@ -160,7 +168,9 @@ filewrite(struct file *f, uint64 addr, int n)
       begin_op();
       ilock(f->ip);
       if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
+      {
         f->off += r;
+      }
       iunlock(f->ip);
       end_op();
 
@@ -171,6 +181,11 @@ filewrite(struct file *f, uint64 addr, int n)
       i += r;
     }
     ret = (i == n ? n : -1);
+    //debug
+    // if (ret == -1)
+    //   printf("filewrite: i 0x%x != n 0x%x\n", i, n);
+    // else
+    //   printf("filewrite: ret is %d\n", ret);
   } else {
     panic("filewrite");
   }
@@ -178,3 +193,41 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+int
+mmapwrite(struct file *f, vaddr_t addr, int offset, int nbytes)
+{
+  int r, ret = 0;
+
+  // write a few blocks at a time to avoid exceeding
+  // the maximum log transaction size, including
+  // i-node, indirect block, allocation blocks,
+  // and 2 blocks of slop for non-aligned writes.
+  int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+  int i = 0;
+  while(i < nbytes){
+    int n1 = nbytes - i;
+    if(n1 > max)
+      n1 = max;
+
+    begin_op();
+    ilock(f->ip);
+    //Use special writebacki function
+    vaddr_t src = addr + i;
+    if ((r = writebacki(f->ip, 1, src, offset, n1)) > 0)
+    {
+      offset += r;
+    }
+    iunlock(f->ip);
+    end_op();
+
+    if(r != n1){
+      // error from writebacki
+      // printf("filewriteback: error from writei. r is 0x%x and n1 is 0x%x, max is 0x%x\n", r, n1, max);
+      break;
+    }
+    i += r;
+  }
+  ret = (i == nbytes ? nbytes : -1);
+
+  return ret;
+}

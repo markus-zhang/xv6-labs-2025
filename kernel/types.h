@@ -8,3 +8,7 @@ typedef unsigned int  uint32;
 typedef unsigned long uint64;
 
 typedef uint64 pde_t;
+
+//So that I'll never misuse int for addresses...
+typedef uint64 vaddr_t;
+typedef uint64 paddr_t;

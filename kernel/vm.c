@@ -7,6 +7,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
+#include "debug.h"
 
 /*
  * the kernel's page table.
@@ -284,6 +288,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 {
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+
   freewalk(pagetable);
 }
 
@@ -402,6 +407,29 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   return 0;
 }
 
+//mmap version copyin()
+int
+copyinback(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
+{
+  uint64 n, va0, pa0;
+
+  while(len > 0){
+    va0 = PGROUNDDOWN(srcva);
+    pa0 = walkaddr(pagetable, va0);
+    n = PGSIZE - (srcva - va0);
+    if(n > len)
+      n = len;
+    //Ignore unmapped pages
+    if(pa0)
+      memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+
+    len -= n;
+    dst += n;
+    srcva = va0 + PGSIZE;
+  }
+  return 0;
+}
+
 // Copy a null-terminated string from user to kernel.
 // Copy bytes to dst from virtual address srcva in a given page table,
 // until a '\0', or max.
@@ -455,6 +483,11 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   uint64 mem;
   struct proc *p = myproc();
 
+  //mmap: check if va is part of mmap addr, call mmap fault handler if so.
+  int index = findmmapwithin(p, va);
+  if (index >= 0)
+    return mmapfault(pagetable, va, index, read);
+
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
@@ -472,8 +505,193 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   return mem;
 }
 
+//Grab the index of the element of p->fmap array whose startva MATCHES addr
+int 
+findmmapbase(struct proc * p, vaddr_t startua)
+{
+  int i = 0;
+  for (; i < MAXMMAP; i++)
+  {
+    if (startua == p->fmap[i].startua)
+      return i;
+  }
+  return -1;
+}
+
+//Grab the index of the element of p->fmap array that CONTAINS addr
+int 
+findmmapwithin(struct proc * p, vaddr_t addr)
+{
+  int i = 0;
+  for (; i < MAXMMAP; i++)
+  {
+    //Use startua to track its change. If startua has moved,
+    //the part of the region cut off should NOT be munmap-able again.
+    //e.g. execute munmap(p, PGSIZE) twice should not be allowed.
+    vaddr_t startua = p->fmap[i].startua;
+    vaddr_t endua = p->fmap[i].startua + p->fmap[i].len;
+    if ((addr >= startua) && (addr < endua))
+      return i;
+  }
+  return -1;
+}
+
+//Stage 1 - Assume every fault is a read fault
+//Stage 2 - Start implementing write back (in sys_munmap())
+//va is always userland virtual address
+uint64
+mmapfault2(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
+{
+  // printf("mmapfault: r_scause() is %ld\n", r_scause());
+  ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
+  ASSERT(pagetable != 0);
+  //mmap region always lower than TRAMPOLINE and at/above MMAPSTART.
+  ASSERT(va < TRAMPOLINE);
+  ASSERT(va >= MMAPSTART);
+  //technically a boolean value.
+  ASSERT((read == 0) || (read == 1));
+
+  //For read fault, should load file into va.
+  //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
+  //va = 0x5400, then the page starts from 0x5000 to 0x6000
+  vaddr_t baseva = PGROUNDDOWN(va);
+  struct proc *p = myproc();
+
+  //if file opened as RO but scause is 15, return 0,
+  //to trigger a fatal trap in usertrap()
+  //if (r_scause() == 15)
+  if(!read)
+    if((p->fmap[fmapidx].prot & PROT_WRITE) == 0)
+      return 0;
+
+  struct file *f = p->fmap[fmapidx].f;
+  // printf("mmapfault: ref of file %lx\n", (uint64)f);
+  if (!f)
+    panic("mmapfault: file is NULL");
+
+  //Fetch file size -> # of pages to map
+  //For size = 0x1800 bytes, should load 2 pages, not 1
+  // int filesz = f->ip->size;
+  // int filepages = filesz / PGSIZE;
+  // if (filesz % PGSIZE != 0)
+  //   filepages += 1;
+
+  paddr_t mem = (uint64)kalloc();
+  if (mem == 0)
+    return 0;
+  memset((void *)mem, 0, PGSIZE);
+  //I think we have to enable PTE_W even for readonly mmap regions
+  //becuase we need to write into it for mmap.
+  //RO/RW should be implemented by looking at p->fmap.addr.prot
+  if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
+  {
+    kfree((void *)mem);
+    return 0;
+  }
+
+  //FIXME: Use the fmap entry offset instead.
+  //Similar to fileread() but with an offset.
+  //What if user program does NOT read in order? Read Trial 5 in lab note.
+  //We should be able to get base va from fmap and manually calculate offset,
+  //and then pass the offset to readi() so it reads the page caller wants.
+  vaddr_t basefmava = p->fmap[fmapidx].startua;
+  int vaoff = baseva - basefmava;
+  //I can't use fileread() because it doesn't have an argument for the offset.
+  //Instead it uses f->off. This is fine for sequential reads.
+  //But difficult if we want to read arbitrary pages (e.g. 10th page -> 3rd page).
+  ilock(f->ip);
+  int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+  //Do not increment the offset as in fileread(), because we don't use it.
+  //Instead we calculate offset as the diff between startua and baseva.
+  iunlock(f->ip);
+  if (bytesread <= 0)
+    panic("mmapfault: fileread failed!");
+
+  // printf("mmapfault: read 0x%x bytes\n", bytesread);
+  return mem;
+}
+
+uint64
+mmapfault(pagetable_t pagetable, vaddr_t va, int fmapidx, int read)
+{
+  // printf("mmapfault: r_scause() is %ld\n", r_scause());
+  ASSERT(fmapidx >= 0 && fmapidx < MAXMMAP);
+  ASSERT(pagetable != 0);
+  //mmap region always lower than TRAMPOLINE and at/above MMAPSTART.
+  ASSERT(va < TRAMPOLINE);
+  ASSERT(va >= MMAPSTART);
+  //technically a boolean value.
+  ASSERT((read == 0) || (read == 1));
+
+  //For read fault, should load file into va.
+  //e.g. mmap region from 0x4000 to 0xA000, a total of 6 pages
+  //va = 0x5400, then the page starts from 0x5000 to 0x6000
+  vaddr_t baseva = PGROUNDDOWN(va);
+  struct proc *p = myproc();
+
+  //if file opened as RO but scause is 15, return 0,
+  //to trigger a fatal trap in usertrap()
+  //if (r_scause() == 15)
+  if(!read)
+    if((p->fmap[fmapidx].prot & PROT_WRITE) == 0)
+      return 0;
+
+  struct file *f = p->fmap[fmapidx].f;
+  // printf("mmapfault: ref of file %lx\n", (uint64)f);
+  if (!f)
+    panic("mmapfault: file is NULL");
+
+  paddr_t mem = (uint64)kalloc();
+  if (mem == 0)
+    return 0;
+  memset((void *)mem, 0, PGSIZE);
+  //I think we have to enable PTE_W even for readonly mmap regions
+  //becuase we need to write into it for mmap.
+  //RO/RW should be implemented by looking at p->fmap.addr.prot
+  if (mappages(pagetable, baseva, PGSIZE, mem, PTE_R|PTE_U|PTE_W) != 0)
+  {
+    kfree((void *)mem);
+    return 0;
+  }
+
+  //Similar to fileread() but with an offset.
+  //What if user program does NOT read in order? Read Trial 5 in lab note.
+  //We should be able to get base va from fmap and manually calculate offset,
+  //and then pass the offset to readi() so it reads the page caller wants.
+
+  vaddr_t basefmava = p->fmap[fmapidx].startua;
+  //p->fmap[fmapidx].offset is the offset of the whole mmap region to the file start.
+  //baseva - basefmava is the offset of this page to the mmap region start.
+  vaddr_t vaoff = p->fmap[fmapidx].offset + (baseva - basefmava);
+  
+  //NOTE: We now allow over-mmap, i.e. user programs can map past EOF.
+  //readi() is only called if the requested page is backed by the file.
+  //For over-mmapped pages, simply return a whole page of 0.
+  //vaoff is actually the absolute offset from BOF (readi() uses it to check out of bound),
+  //so we only need to check it against sz.
+
+  if (vaoff < f->ip->size)
+  {
+    ilock(f->ip);
+    int bytesread = readi(f->ip, 1, baseva, vaoff, PGSIZE);
+    //Do not increment the offset as in fileread(), because we don't use it.
+    //Instead we calculate offset as the diff between startua and baseva.
+    iunlock(f->ip);
+    if (bytesread <= 0)
+      panic("mmapfault: fileread failed!");
+  }
+  //For debugging only.
+  else
+  {
+    DPRINTF("mmapfault: overmapped region 0x%lx hit!\n", vaoff);
+  }
+
+  // printf("mmapfault: read 0x%x bytes\n", bytesread);
+  return mem;
+}
+
 int
-ismapped(pagetable_t pagetable, uint64 va)
+ismapped(pagetable_t pagetable, vaddr_t va)
 {
   pte_t *pte = walk(pagetable, va, 0);
   if (pte == 0) {

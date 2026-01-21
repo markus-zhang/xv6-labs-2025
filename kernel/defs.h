@@ -40,6 +40,8 @@ void            fileinit(void);
 int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
+int             filewriteback(struct file*, uint64, int n);
+int             mmapwrite(struct file *f, vaddr_t addr, int offset, int nbytes);
 
 // fs.c
 void            fsinit(int);
@@ -59,6 +61,7 @@ struct inode*   nameiparent(char*, char*);
 int             readi(struct inode*, int, uint64, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, int, uint64, uint, uint);
+int             writebacki(struct inode*, int, uint64, uint, uint);
 void            itrunc(struct inode*);
 void            ireclaim(int);
 
@@ -183,9 +186,13 @@ pte_t *         walk(pagetable_t, uint64, int);
 uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
+int             copyinback(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
+uint64          mmapfault(pagetable_t pagetable, uint64 va, int fmapidx, int read);
+int             findmmapbase(struct proc * p, uint64 startua);
+int             findmmapwithin(struct proc * p, uint64 addr);
 #if defined(LAB_PGTBL) || defined(SOL_MMAP)
 void            vmprint(pagetable_t);
 #endif

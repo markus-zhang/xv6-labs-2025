@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "debug.h"
 
 struct cpu cpus[NCPU];
 
@@ -55,6 +56,13 @@ procinit(void)
       initlock(&p->lock, "proc");
       p->state = UNUSED;
       p->kstack = KSTACK((int) (p - proc));
+
+      //mmap
+      // p->fmap.fd = 0;
+      // p->fmap.addr.startua = 0;
+      // p->fmap.addr.npage = 0;
+      // p->fmap.addr.prot = 0;
+      // p->fmap.addr.flags = 0;
   }
 }
 
@@ -273,6 +281,14 @@ kfork(void)
   }
   np->sz = p->sz;
 
+  //mmap: Copy vma to child
+  np->totalvma = p->totalvma;
+  for (int i = 0; i < MAXMMAP; i++)
+  {
+    np->fmap[i] = p->fmap[i];
+    //printf("kfork: file pointer %p\n", np->fmap[i].f);
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -327,6 +343,20 @@ kexit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  //mmap: free mmap regions <- proc exits without sys_munmap() all
+  //cannot use uvmfree() because it doesn't pass the child proc as argument
+  for (int i = 0; i < MAXMMAP; i++)
+  {
+    if (p->fmap[i].f)
+    {
+      DPRINTF(
+        "pid: %d: fmap slot %d, from 0x%lx, len 0x%x\n", 
+        p->pid, i, p->fmap[i].startua, p->fmap[i].len
+      );
+      uvmunmap(p->pagetable, p->fmap[i].startua, p->fmap[i].len / PGSIZE, 1);
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

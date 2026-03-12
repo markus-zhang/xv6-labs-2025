@@ -1,8 +1,20 @@
 {
   "files.associations": {
+    "*.h": "c",
     "fcntl.h": "c",
     "debug.h": "c",
     "spinlock.h": "c",
-    "defs.h": "c"
+    "defs.h": "c",
+    "bit": "c",
+    "compare": "c",
+    "condition_variable": "c",
+    "cstddef": "c",
+    "string": "c",
+    "future": "c",
+    "limits": "c",
+    "memory": "c",
+    "mutex": "c",
+    "new": "c",
+    "functional": "c"
   }
 }

@@ -85,6 +85,7 @@ main(int argc, char *argv[])
   assert((BSIZE % sizeof(struct dinode)) == 0);
   assert((BSIZE % sizeof(struct dirent)) == 0);
 
+  //fsfd is the file descriptor of fs.img in practice.
   fsfd = open(argv[1], O_RDWR|O_CREAT|O_TRUNC, 0666);
   if(fsfd < 0)
     die(argv[1]);
@@ -93,6 +94,7 @@ main(int argc, char *argv[])
   nmeta = 2 + nlog + ninodeblocks + nbitmap;
   nblocks = FSSIZE - nmeta;
 
+  //Super block is block 1 (block 0 is boot)
   sb.magic = FSMAGIC;
   sb.size = xint(FSSIZE);
   sb.nblocks = xint(nblocks);
@@ -105,18 +107,32 @@ main(int argc, char *argv[])
   printf("nmeta %d (boot, super, log blocks %u, inode blocks %u, bitmap blocks %u) blocks %d total %d\n",
          nmeta, nlog, ninodeblocks, nbitmap, nblocks, FSSIZE);
 
+  //This is probably the index of the first data block
   freeblock = nmeta;     // the first free block that we can allocate
 
+  //Write zeros to every sector/block. Each sector/block has BSIZE (0x1000) bytes.
+  //XV6 FS has a total of 2,000 sectors/blocks.
   for(i = 0; i < FSSIZE; i++)
     wsect(i, zeroes);
 
+  //Copy the content of superblock sb into the buffer, 
+  //then write the buffer into sector/block 1
+  //TODO: Can we write sb into sector/block 1 instead of using a buffer?
+  //Something like: wsect(1, (void *)(&buf))
   memset(buf, 0, sizeof(buf));
   memmove(buf, &sb, sizeof(sb));
   wsect(1, buf);
 
+  //Allocate an inode and return the inum index as rootino.
+  //This is the inode of the root directory. It should have inum 1.
   rootino = ialloc(T_DIR);
   assert(rootino == ROOTINO);
 
+  //This bzero() is NOT the one in fs.c as that one is static, but the one in host OS.
+  //https://man7.org/linux/man-pages/man3/bzero.3.html
+  //mkfs.c uses a "template" de to make . and .. for the root directory.
+  //NOTE: I have inspected the fs.img file. The dinode of root directory is at address 0x8440.
+  //This is because the inum of the root directory inode is 1, not 0, and each dinode has 64 bytes of size. 0x8400 + 0x40 = 0x8450, where 0x8400 is calculated by: sb.inodestart = xint(2+nlog), which is block 33, so 33 * 1,024 = 0x8400
   bzero(&de, sizeof(de));
   de.inum = xshort(rootino);
   strcpy(de.name, ".");
@@ -127,14 +143,20 @@ main(int argc, char *argv[])
   strcpy(de.name, "..");
   iappend(rootino, &de, sizeof(de));
 
+  //For each file in the argument list.
   for(i = 2; i < argc; i++){
     // get rid of "user/"
     char *shortname;
+    //if filename contains user/ -> check UEXTRA in Makefile
+    //There are two files with user/ prefix
     if(strncmp(argv[i], "user/", 5) == 0)
       shortname = argv[i] + 5;
     else
       shortname = argv[i];
     
+    //This is another host library (non-xv6) function.
+    //returns 0 if not found. This means filenames such as abcd/ or user/blah/mau don't pass.
+    //NOTE: I think this is really limiting. What if I have a file /user/test/blah.c?
     assert(index(shortname, '/') == 0);
 
     if((fd = open(argv[i], 0)) < 0)
@@ -149,22 +171,37 @@ main(int argc, char *argv[])
 
     assert(strlen(shortname) <= DIRSIZ);
     
+    //OK looks like mkfs.c defaults to just one directory -- the root one.
+    //Everything else is a file in default.
+    //This is probably why it stripped off the user/ in the beginning of the loop.
     inum = ialloc(T_FILE);
 
+    //Recall that inode (in this case the inode of the root directory)
+    //contains directory entries in its block(s).
     bzero(&de, sizeof(de));
     de.inum = xshort(inum);
     strncpy(de.name, shortname, DIRSIZ);
     iappend(rootino, &de, sizeof(de));
 
+    //File may be larger than 0x400 bytes.
+    //It takes more than one buffer to contain the file.
     while((cc = read(fd, buf, sizeof(buf))) > 0)
       iappend(inum, buf, cc);
 
     close(fd);
+
+    //Summarize: this loop first fixes the filename, and copies it into de.name.
+    //Then it appends the de (directory entry) onto the inode of the root directory.
+    //Finally it appends its own content onto its own inode.
+    //TODO: Figure out how these blocks are written into the FS. I don't see wsect().
+    //I think the key is in iappend().
   }
 
   // fix size of root inode dir
+  //Store the address of the rootino inode into &din. Changing din changes that inode.
   rinode(rootino, &din);
   off = xint(din.size);
+  //TODO: Figure out why mkfs.c needs to set din.size to ceiling(din.size).
   off = ((off/BSIZE) + 1) * BSIZE;
   din.size = xint(off);
   winode(rootino, &din);
@@ -204,8 +241,17 @@ rinode(uint inum, struct dinode *ip)
   uint bn;
   struct dinode *dip;
 
+  //Get block number from inum. Expands to:
+  //((inum) / (1024 / sizeof(struct dinode)) + sb.inodestart)
+  //sb.inodestart is the block number of the first inode block.
   bn = IBLOCK(inum, sb);
+  //Read one sector/block into buf.
   rsect(bn, buf);
+  //Assume each directory entry is 16 bytes, this means IPB=64.
+  //Let's say inum = 70, so we get buf + 6, sort of wrap around.
+  //NOTE: This might be conter-intuitive, but the fact is,
+  //we already got the block number of the inode, so the "offset"
+  //must be of [0, 64]. There is no way it belongs to the next block.
   dip = ((struct dinode*)buf) + (inum % IPB);
   *ip = *dip;
 }

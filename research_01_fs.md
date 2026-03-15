@@ -10,6 +10,8 @@
 
 ## Data Structure
 
+### On disk block & In memory buffer cache
+
 On disk, the bytes of the file system are represented by "blocks". In xv6, each block is defined as 1,024 bytes, in `BSIZE`.
 
 The first block of the file system is the **superblock**, defined in `struct superblock`:
@@ -26,6 +28,45 @@ struct superblock {
   uint bmapstart;    // Block number of first free map block
 };
 ```
+
+`bread()` and `bwrite()` are the most used routines by upper layers. For example, `readi()` invokes `bread()` in a loop.
+
+```C
+// Return a locked buf with the contents of the indicated block.
+struct buf*
+bread(uint dev, uint blockno)
+{
+  struct buf *b;
+
+  b = bget(dev, blockno);
+  if(!b->valid) {
+    virtio_disk_rw(b, 0);
+    b->valid = 1;
+  }
+  return b;
+}
+```
+
+The `bread()` routine is pretty straighforward. It first tries to `bget()` a block from the cache, in case the `blockno`-th block is already in the cache. If it is not in the cache, `bget()` then use the LRU unused buffer (by checking its `refcnt`).
+
+However, the ^ leaves two questions:
+
+- How do we know which `blockno` maps to, say, `README`, the file we want to read? After all the whole block map is not exposed to us?
+
+- How is `b->data` filled?
+
+**Q1: How do we know which `blockno` maps to, say, `README`, the file we want to read?**
+
+The `inode` has a field `addrs` that is an array of blockn. This means that the kernel already knows where the blocks are whence the `inode` is in place. There must be a program, or a routine, that filled the data when the file was "scanned" by the kernel the first time. Since `inode`s are stored on disk as `dniode`, I suspect it is `mkfs.c`, because it doesn't make sense for the kernel to "scan" the FS during EVERY boot. The root `Makefile` does run `mkfs` for ALL of the existing files so this looks like the case.
+
+```Makefile
+fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
+	mkfs/mkfs fs.img README $(UEXTRA) $(UPROGS)
+```
+
+I then investigate the source code of `mkfs.c`. 
+
+
 
 ## Access Methods
 
@@ -85,9 +126,15 @@ The most important thing here is the `inum`, which is the index of the `struct i
 
 Please allow me to repeat because it is really important to understand the low level details of this routine.
 - The routine needs to find a `struct dirent` that has its `name` member matches `README`;
+
 - To do so, it needs to load the `struct dirent` into the variable `dp`, becuase that data structure is on disk;
+
 - For a directory inode, the blocks it occupies is simply a sequence of `struct dirent` objects. The reader can read `dirlink()` to find how this is implemented -- it fetches an empty `struct dirent`, fills in `name`, and then write it into the block;
+
+- To interact with the block layer, `readi()` calls `bread()`. `bread()` calls `virtio_disk_rw()` which is the virtual disk driver -- this is the lowest level we can get into, but it is more pragmatic to keep ourselves in the block layer and above -- and unless we are writing a new FS, we don't need to look at the block layer, either, as `readi()` and `writei()` are pretty much everything we need;
+
 - Once it loads the address of `struct dirent` into `dp`, it then compares `dp->name` with `README`. It loops through all `struct dirent`, until it finds a match;
+
 - It then uses the `inum` to get the `struct inode*` of the file `README`;
 
 This `struct inode*` is returned as `next`. And copied into `ip`, which is returned from `namex()`.
@@ -162,7 +209,17 @@ We have a bunch of concepts about a file: block, inode, file and fd.
 
 - Content of file is saved in blocks. The index of these blocks are saved in its `inode`.
 
-- When user reads a file, he/she only knows the name of the file. The internals of the FS is not exposed to the user. For example, he cannot grab a block, or a `struct file*`. User land routines only has access to `open()` and `read()`.
+- When user reads a file into a buffer, he/she only knows the name of the file. The internals of the FS is not exposed to the user. For example, he cannot grab a block, or a `struct file*`. User land routines only has access to `open()` and `read()`.
+
+- Ultimately, reading a file into a buffer requires calling `fileread()` to read bytes from the raw blocks into the buffer. Opening the file saves a `struct file*` into the array `ofile`, and get its index as the fd.
+
+- To open the file, xv6 needs to find its parent directory's `inode`, and from it finds the matching directory entry. Once it has the directory entry, it can find the `inode` of the file easily as the `inum` member of the directory entry is simply an index of the array `itable`.
+
+- Using the `inode`, it can then allocate a `struct file*` and its fd.
+
+Please note that there are clear boundaries between the physcial (blocks), the metadata (inode) and the file attributes (file and its fd). If we want to read any file, we need to load the file into memory, and to load anything from the disk into memory (e.g. a variable or a buffer on stack), we need to use the block interface (`readi()` in this case).
+
+
 
 ## Advanced projects
 

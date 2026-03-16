@@ -1,0 +1,1 @@
+void dump_logheader(void);

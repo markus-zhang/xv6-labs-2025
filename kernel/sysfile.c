@@ -13,6 +13,8 @@
 #include "proc.h"
 #include "fs.h"
 #include "sleeplock.h"
+#include "buf.h"
+#include "log.h"
 #include "file.h"
 #include "fcntl.h"
 #include "debug.h"
@@ -823,4 +825,80 @@ sys_munmap(void)
   DPRINTF("fmap[%d]: startua 0x%lx with len 0x%x\n", index, newstartua, p->fmap[index].len);
 
   return 0;
+}
+
+//Research syscall to dump FS metadata using lower level interface
+void sys_fsdump()
+{
+  //--------------Superblock Begin---------------------
+  struct buf *bp;
+  struct superblock sb;
+
+  struct proc *p = myproc();
+  uint dev = p->cwd->dev;
+
+  //Superblock is always block 1 in xv6 fs
+  bp = bread(dev, 1);
+  memmove(&sb, bp->data, sizeof(sb));
+  //bread() always returns a locked block
+  brelse(bp);
+
+  //struct superblock {
+  //  uint magic;        // Must be FSMAGIC
+  //  uint size;         // Size of file system image (blocks)
+  //  uint nblocks;      // Number of data blocks
+  //  uint ninodes;      // Number of inodes.
+  //  uint nlog;         // Number of log blocks
+  //  uint logstart;     // Block number of first log block
+  //  uint inodestart;   // Block number of first inode block
+  //  uint bmapstart;    // Block number of first free map block
+  //};
+
+  printf("Super block data:\n");
+  printf("\tmagic: 0x%x\n", sb.magic);
+  printf("\tsize: 0x%x %d\n", sb.size, sb.size);
+  printf("\tnblocks: 0x%x %d\n", sb.nblocks, sb.nblocks);
+  printf("\tninodes: 0x%x %d\n", sb.ninodes, sb.ninodes);
+  printf("\tnlog: 0x%x %d\n", sb.nlog, sb.nlog);
+  printf("\tBlock number of first log block: 0x%x %d\n", sb.logstart, sb.logstart);
+  printf("\tBlock number of first inode block: 0x%x %d\n", sb.inodestart, sb.inodestart);
+  printf("\tBlock number of first free map block: 0x%x %d\n", sb.bmapstart, sb.bmapstart);
+
+  //--------------Superblock End---------------------
+
+  //--------------Log Start--------------------------
+
+  printf("Log header data:\n");
+  dump_logheader();
+
+  //--------------Log End----------------------------
+
+  //--------------inode Start------------------------
+
+  printf("inode data:\n");
+
+  uint inodestart = sb.inodestart;
+  bp = bread(dev, inodestart);
+
+  //Each dinode is 64-byte
+  for (int offset = 0; offset < BSIZE; offset += sizeof(struct dinode))
+  {
+    struct dinode *dn = (struct dinode *)(bp->data + offset);
+    printf("\t type: %d\n", (int)(dn->type));
+    printf("\t major: %d\n", (int)(dn->major));
+    printf("\t minor: %d\n", (int)(dn->minor));
+    printf("\t nlink: %d\n", (int)(dn->nlink));
+    printf("\t size: %d\n", dn->size);
+    printf("\t blocks: ");
+    for (int index = 0; index < NDIRECT+1; index++)
+    {
+      uint blockn = dn->addrs[index];
+      if (blockn)
+        printf("%d, ", blockn);
+    }
+    printf("\n");
+  }
+
+  brelse(bp);
+
 }

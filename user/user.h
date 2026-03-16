@@ -31,6 +31,7 @@ int pause(int);
 int uptime(void);
 char* mmap(void*, int, int, int, int, int);
 int munmap(void*, int);
+int fsdump(void);
 #ifdef LAB_NET
 int bind(uint16);
 int unbind(uint16);

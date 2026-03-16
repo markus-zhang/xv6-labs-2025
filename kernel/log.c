@@ -6,6 +6,7 @@
 #include "sleeplock.h"
 #include "fs.h"
 #include "buf.h"
+#include "log.h"
 
 // Simple logging that allows concurrent FS system calls.
 //
@@ -97,12 +98,29 @@ read_head(void)
   brelse(buf);
 }
 
+//Helper function to dump the log header data.
+//Since struct logheader is not referencable from other source files, this is the eaiser way.
+void
+dump_logheader(void)
+{
+  printf("\tNumber of log blocks: %d\n", log.lh.n);
+  printf("\tBlocks: ");
+
+  for (int i = 0; i < log.lh.n; i++)
+  {
+    printf("%d, ", log.lh.block[i]);
+  }
+  printf("\n");
+}
+
 // Write in-memory log header to disk.
 // This is the true point at which the
 // current transaction commits.
 static void
 write_head(void)
 {
+  //log.start is the blockn of the first block of the whole on-disk log system.
+  //So the first block contains the log header.
   struct buf *buf = bread(log.dev, log.start);
   struct logheader *hb = (struct logheader *) (buf->data);
   int i;

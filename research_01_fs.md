@@ -64,8 +64,7 @@ fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
 	mkfs/mkfs fs.img README $(UEXTRA) $(UPROGS)
 ```
 
-I then investigate the source code of `mkfs.c`. 
-
+I then investigate the source code of `mkfs.c`. Please see my notes for `main()`. I tried to dig deeper into `iappend()` but did not manage to figure everything out. I decided to leave the program for now and work on some user space programs for the FS.
 
 
 ## Access Methods
@@ -220,6 +219,10 @@ We have a bunch of concepts about a file: block, inode, file and fd.
 Please note that there are clear boundaries between the physcial (blocks), the metadata (inode) and the file attributes (file and its fd). If we want to read any file, we need to load the file into memory, and to load anything from the disk into memory (e.g. a variable or a buffer on stack), we need to use the block interface (`readi()` in this case).
 
 
+## Research projects
+
+- A system call that prints all information of the file system:
+  - Dump the super block (use lower level fs.c interface, referencing readsb())
 
 ## Advanced projects
 

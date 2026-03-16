@@ -44,3 +44,4 @@ entry("pause");
 entry("uptime");
 entry("mmap");
 entry("munmap");
+entry("fsdump");
